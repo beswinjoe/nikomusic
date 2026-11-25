@@ -1,7 +1,8 @@
-import type { DiscordNowPlaying, DiscordPresenceOptions, DiscordState } from '@bitchord/shared/bridge';
+import type { DiscordNowPlaying, DiscordPresenceOptions, DiscordState } from '@nikomusic/shared/bridge';
 import { installDiscordFetchRule } from './rules';
 
 declare const __DISCORD_PRESENCE__: boolean;
+declare const __PROJECT_URL__: string;
 
 /**
  * Discord rich presence (prompt §7.2), behind the DISCORD_PRESENCE build flag.
@@ -26,14 +27,14 @@ declare const __DISCORD_PRESENCE__: boolean;
  *   timer in Chrome and Firefox; Chrome 116+ also counts socket traffic).
  */
 
-/** BitChord's own Discord application (DiscordApplication.kt). */
+/** Niko Music's own Discord application (DiscordApplication.kt). */
 export const APPLICATION_ID = '1543679166967193620';
 const GATEWAY = 'wss://gateway.discord.gg/?v=9&encoding=json';
 const API = 'https://discord.com/api/v9';
-const PROJECT_URL = 'https://github.com/kushagrasinghx/BitChord';
+const PROJECT_URL = typeof __PROJECT_URL__ !== 'undefined' ? __PROJECT_URL__ : '';
 const DEFAULT_BUTTON_1 = 'Listen on YouTube Music';
-const DEFAULT_BUTTON_2 = 'Visit BitChord';
-const APP_NAME = 'BitChord';
+const DEFAULT_BUTTON_2 = 'Visit Niko Music';
+const APP_NAME = 'Niko Music';
 
 const INITIAL_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 60_000;
@@ -201,7 +202,7 @@ export class Gateway {
       try {
         this.onMessage(JSON.parse(String(event.data)) as Payload);
       } catch (error) {
-        console.warn('BitChord: Discord gateway payload', error);
+        console.warn('NikoMusic: Discord gateway payload', error);
       }
     };
     socket.onclose = (event) => {
@@ -246,7 +247,7 @@ export class Gateway {
   }
 
   private drop(why: string): void {
-    console.info(`BitChord: Discord gateway dropped (${why})`);
+    console.info(`NikoMusic: Discord gateway dropped (${why})`);
     this.ready = false;
     this.socket?.close();
   }
@@ -406,7 +407,7 @@ export async function buildPresence(token: string, track: DiscordNowPlaying, opt
   const watchUrl = `https://music.youtube.com/watch?v=${track.videoId}`;
   const buttons: [string, string][] = [];
   if (options.button1Visible) buttons.push([resolveVariables(options.button1Text || DEFAULT_BUTTON_1, track), watchUrl]);
-  if (options.button2Visible) buttons.push([resolveVariables(options.button2Text || DEFAULT_BUTTON_2, track), PROJECT_URL]);
+  if (options.button2Visible && PROJECT_URL) buttons.push([resolveVariables(options.button2Text || DEFAULT_BUTTON_2, track), PROJECT_URL]);
   const art = track.artworkUrl?.startsWith('http') ? track.artworkUrl : null;
   // An unreachable mirror keeps the raw URL, as RpcImage.ExternalImage does.
   const largeImage = art ? ((await externalAsset(token, art)) ?? art) : null;
@@ -508,7 +509,7 @@ export async function setPresence(track: DiscordNowPlaying | null, options: Disc
   await ensureGateway(held.token).sendActivity(presence);
 }
 
-/** Every BitChord page has gone: nobody is playing, so the card comes down with the socket. */
+/** Every NikoMusic page has gone: nobody is playing, so the card comes down with the socket. */
 export function allPagesClosed(): void {
   gateway?.clearActivity();
   idleTimer = setTimeout(closeGateway, 2_000);

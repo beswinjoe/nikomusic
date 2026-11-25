@@ -151,10 +151,10 @@ export function Sidebar() {
         aria-label="Main"
       >
         <div className="mt-2 ml-2 flex h-18 items-center px-5">
-          <PrefetchLink to="/home" className="inline-flex items-center gap-2 rounded-[6px]" aria-label="BitChord, Home" onClick={close}>
+          <PrefetchLink to="/home" className="inline-flex items-center gap-2 rounded-[6px]" aria-label="Niko Music, Home" onClick={close}>
             {/* White on dark, as Apple's own wordmark; it follows the label colour so it stays visible in light. */}
             <LogoMark size={22} className="text-primary" />
-            <span className="type-[700_19px/24px] tracking-[-0.01em]">BitChord</span>
+            <span className="type-[700_19px/24px] tracking-[-0.01em]">Niko Music</span>
           </PrefetchLink>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pr-3 pl-5 [scrollbar-width:none]">
@@ -168,7 +168,7 @@ export function Sidebar() {
             <span className={icon}>
               <MdOutlineExtension size={18} />
             </span>
-            <span className={navLabel}>BitChord Extension</span>
+            <span className={navLabel}>Niko Music Extension</span>
             {update.state === 'available' && (
               <span className="ml-auto rounded-[10px] bg-key px-[7px] py-0.5 type-subhead-emphasized text-white" title={`Version ${update.latest.version} is available`}>
                 Update
@@ -177,10 +177,14 @@ export function Sidebar() {
           </PrefetchNavLink>
           <AccountButton />
           <div className="flex items-center justify-between">
-            <a className="inline-flex items-center gap-1 ps-1 type-callout text-primary hover:underline" href={config.androidAppUrl} target="_blank" rel="noreferrer">
-              <span>Get the Android app</span>
-              <ArrowUpRight size={14} strokeWidth={2} />
-            </a>
+            {config.androidAppUrl ? (
+              <a className="inline-flex items-center gap-1 ps-1 type-callout text-primary hover:underline" href={config.androidAppUrl} target="_blank" rel="noreferrer">
+                <span>Get the Android app</span>
+                <ArrowUpRight size={14} strokeWidth={2} />
+              </a>
+            ) : (
+              <span />
+            )}
             <PrefetchNavLink to="/settings" className="grid size-7 place-items-center rounded-nav text-secondary hover:bg-quinary hover:text-primary aria-[current=page]:bg-quinary aria-[current=page]:text-primary" aria-label="Settings" title="Settings" onClick={close}>
               <Settings size={17} strokeWidth={1.9} />
             </PrefetchNavLink>

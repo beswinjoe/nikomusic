@@ -1,4 +1,4 @@
-import type { DetectedExtension } from '@bitchord/shared/bridge';
+import type { DetectedExtension } from '@nikomusic/shared/bridge';
 import { create } from 'zustand';
 import type { Track } from '@/data/music/types';
 import { extensionQueryKey } from '@/extension/useExtension';
@@ -106,7 +106,7 @@ interface PlayerState extends Settings {
 
 // ---- Settings, kept across visits ---------------------------------------------------
 
-const SETTINGS_KEY = 'bitchord:player';
+const SETTINGS_KEY = 'nikomusic:player';
 const DEFAULT_SETTINGS: Settings = {
   shuffle: false,
   repeat: 'off',
@@ -205,7 +205,7 @@ function getDecks(): Promise<Deck[]> {
     });
     applyVolumes();
     // For browser-driven tests: the elements aren't in the DOM.
-    if (import.meta.env.DEV) Object.defineProperty(window, '__bcAudio', { get: getAudio, configurable: true });
+    if (import.meta.env.DEV) Object.defineProperty(window, '__nikoMusicAudio', { get: getAudio, configurable: true });
     return decks;
   })();
   return decksPromise;
@@ -290,7 +290,7 @@ function ensureAutomix(): Promise<AutomixGraph | null> {
     );
     graph = built;
     applyVolumes();
-    if (import.meta.env.DEV) Object.assign(window, { __bcAutomix: built, __bcAnalyzer: analyzer });
+    if (import.meta.env.DEV) Object.assign(window, { __nikoMusicAutomix: built, __nikoMusicAnalyzer: analyzer });
     return built;
   });
   return graphPromise;
@@ -638,10 +638,10 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
   },
 }));
 
-// For browser-driven tests, next to __bcAudio.
+// For browser-driven tests, next to __nikoMusicAudio.
 if (import.meta.env.DEV) {
   Object.assign(window, {
-    __bcPlayer: usePlayer,
+    __nikoMusicPlayer: usePlayer,
     // AutoMix's analysis self-test: expect BPM ≈ 123.93 and Camelot 8A.
     __automixSelfTest: () => import('@/playback/automix/analysis/selftest').then((m) => m.analysisSelfTest()),
   });
@@ -679,7 +679,7 @@ async function startAt(at: number, { startSec = 0, auto = false, autoplay = true
       index: at,
       nowPlaying: { ...hintOf(entry.track), title: entry.track.title || 'Can’t play this here yet' },
       status: 'error',
-      error: 'YouTube playback needs the BitChord extension.',
+      error: 'YouTube playback needs the Niko Music extension.',
     });
     return;
   }

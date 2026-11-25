@@ -23,16 +23,15 @@ val localProps = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
-val lastfmApiKey: String = (
-    localProps.getProperty("LASTFM_API_KEY")
-        ?: System.getenv("LASTFM_API_KEY")
-        ?: ""
-    ).trim()
-val lastfmSecret: String = (
-    localProps.getProperty("LASTFM_SECRET")
-        ?: System.getenv("LASTFM_SECRET")
-        ?: ""
-    ).trim()
+
+fun propOrEnv(name: String, fallback: String = ""): String =
+    (localProps.getProperty(name) ?: System.getenv(name) ?: fallback).trim()
+
+fun String.asBuildConfigString(): String =
+    "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+val lastfmApiKey: String = propOrEnv("LASTFM_API_KEY")
+val lastfmSecret: String = propOrEnv("LASTFM_SECRET")
 
 /*
  * Where Listen Together's party server lives. Not a credential — it is a public
@@ -46,11 +45,31 @@ val lastfmSecret: String = (
  * builds and runs, and simply asks for an address the first time somebody opens
  * the screen. See ListenTogether.DEFAULT_SERVER.
  */
-val listenTogetherServer: String = (
-    localProps.getProperty("LISTEN_TOGETHER_SERVER")
-        ?: System.getenv("LISTEN_TOGETHER_SERVER")
-        ?: "https://bitchord-listen-together.onrender.com"
-    ).trim().trimEnd('/')
+val listenTogetherServer: String = propOrEnv("LISTEN_TOGETHER_SERVER").trimEnd('/')
+val presenceEndpoint: String = propOrEnv("PRESENCE_ENDPOINT")
+val githubRepository: String = propOrEnv("GITHUB_REPOSITORY")
+val projectUrl: String = propOrEnv(
+    "PROJECT_URL",
+    if (githubRepository.isNotEmpty()) "https://github.com/$githubRepository" else "",
+)
+val releasesApiUrl: String = propOrEnv(
+    "RELEASES_API_URL",
+    if (githubRepository.isNotEmpty()) "https://api.github.com/repos/$githubRepository/releases/latest" else "",
+)
+val automixModelsBaseUrl: String = propOrEnv(
+    "AUTOMIX_MODELS_BASE_URL",
+    if (githubRepository.isNotEmpty()) "https://github.com/$githubRepository/releases/latest/download/model_" else "",
+)
+val websiteUrl: String = propOrEnv("WEBSITE_URL").trimEnd('/')
+val communityUrl: String = propOrEnv("COMMUNITY_URL")
+val jamInviteOrigin: String = propOrEnv(
+    "JAM_INVITE_ORIGIN",
+    listenTogetherServer.takeIf { it.startsWith("https://", ignoreCase = true) }.orEmpty(),
+).trimEnd('/')
+val jamInviteHost: String = propOrEnv(
+    "JAM_INVITE_HOST",
+    runCatching { java.net.URI(jamInviteOrigin).host }.getOrNull().orEmpty(),
+)
 
 /*
  * Bump this by hand before cutting each sideloaded test build ("beta2",
@@ -70,7 +89,7 @@ val listenTogetherServer: String = (
 val betaSuffix = ""
 
 android {
-    namespace = "com.music.bitchord"
+    namespace = "com.music.nikomusic"
     // InnerTubeX's AAR requires compiling against 37; targetSdk (runtime behaviour) stays 36.
     compileSdk = 37
 
@@ -85,7 +104,7 @@ android {
     defaultConfig {
         // Its own id, so the TV app is a separate install from the phone app
         // rather than an upgrade over it (or under it).
-        applicationId = "com.music.bitchord.tv"
+        applicationId = "com.music.nikomusic.tv"
         // 26 keeps reach wide; real-time blur (RenderEffect) kicks in on API 31+,
         // Haze falls back to a translucent scrim below that.
         minSdk = 26
@@ -96,21 +115,26 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Last.fm credentials are supplied locally and never committed.
-        buildConfigField("String", "LASTFM_API_KEY", "\"${lastfmApiKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-        buildConfigField("String", "LASTFM_SECRET", "\"${lastfmSecret.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-        buildConfigField(
-            "String",
-            "LISTEN_TOGETHER_SERVER",
-            "\"${listenTogetherServer.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
-        )
+        buildConfigField("String", "LASTFM_API_KEY", lastfmApiKey.asBuildConfigString())
+        buildConfigField("String", "LASTFM_SECRET", lastfmSecret.asBuildConfigString())
+        buildConfigField("String", "LISTEN_TOGETHER_SERVER", listenTogetherServer.asBuildConfigString())
         // TV has no addons; AddonAuth only reaches the compiler through the
         // shared phone sources, so it gets no server.
         buildConfigField("String", "ADDON_AUTH_URL", "\"\"")
+        buildConfigField("String", "PRESENCE_ENDPOINT", presenceEndpoint.asBuildConfigString())
+        buildConfigField("String", "PROJECT_URL", projectUrl.asBuildConfigString())
+        buildConfigField("String", "RELEASES_API_URL", releasesApiUrl.asBuildConfigString())
+        buildConfigField("String", "AUTOMIX_MODELS_BASE_URL", automixModelsBaseUrl.asBuildConfigString())
+        buildConfigField("String", "WEBSITE_URL", websiteUrl.asBuildConfigString())
+        buildConfigField("String", "COMMUNITY_URL", communityUrl.asBuildConfigString())
+        buildConfigField("String", "JAM_INVITE_ORIGIN", jamInviteOrigin.asBuildConfigString())
+        manifestPlaceholders["jamInviteScheme"] = if (jamInviteHost.isNotEmpty()) "https" else "nikomusic-unconfigured"
+        manifestPlaceholders["jamInviteHost"] = jamInviteHost.ifEmpty { "invite.invalid" }
         // The TV APKs share a GitHub release with the phone ones and are told
-        // apart by name (BitChordTV-v1.8.apk, BitChordTV-v1.8_x86_64.apk), so
+        // apart by name (NikoMusicTV-v1.8.apk, NikoMusicTV-v1.8_x86_64.apk), so
         // the updater installs the TV app here, never the phone app. See
         // AppUpdateChecker.apkAssetUrl.
-        buildConfigField("String", "UPDATE_APK_PREFIX", "\"BitChordTV-\"")
+        buildConfigField("String", "UPDATE_APK_PREFIX", "\"NikoMusicTV-\"")
     }
 
     splits {
@@ -158,12 +182,12 @@ android {
     productFlavors {
         create("dev") {
             dimension = "env"
-            applicationId = "com.dev.bitchord.tv"
-            resValue("string", "app_name", "BitChord TV")
+            applicationId = "com.dev.nikomusic.tv"
+            resValue("string", "app_name", "Niko Music TV Dev")
         }
         create("prod") {
             dimension = "env"
-            resValue("string", "app_name", "BitChord TV")
+            resValue("string", "app_name", "Niko Music TV")
         }
     }
 
@@ -393,7 +417,7 @@ dependencies {
     // a camera scanner and an Activity with it, and nothing here reads a code —
     // a party is joined by tapping somebody else's link or typing six
     // characters. This produces the bit matrix; the drawing is ours, in
-    // [com.music.bitchord.ui.components.QrCode], so the result is styled like
+    // [com.music.nikomusic.ui.components.QrCode], so the result is styled like
     // the rest of the app rather than a stock black-and-white bitmap.
     implementation("com.google.zxing:core:3.5.3")
 
@@ -460,14 +484,14 @@ dependencies {
     // ---- Casting: Google Cast sender + the route discovery it sits on ----
     // The framework and the router only. media3-cast is left out on purpose:
     // its CastPlayer hands the receiver whatever URI a MediaItem carries, and
-    // ours are `bitchord://` addresses that only the service's resolver can
-    // turn into a real stream — see [com.music.bitchord.playback.cast.CastPlayback].
+    // ours are `nikomusic://` addresses that only the service's resolver can
+    // turn into a real stream — see [com.music.nikomusic.playback.cast.CastPlayback].
     implementation("com.google.android.gms:play-services-cast-framework:22.2.0")
     implementation("androidx.mediarouter:mediarouter:1.8.1")
 
     // ---- Google Drive backup ----
     // The TV compiles the phone's sources, which include
-    // com.music.bitchord.data.backup.DriveAuth; same dependency as the phone.
+    // com.music.nikomusic.data.backup.DriveAuth; same dependency as the phone.
     implementation("com.google.android.gms:play-services-auth:21.3.0")
 
     testImplementation("junit:junit:4.13.2")
@@ -505,10 +529,10 @@ val verifyDevInstall = tasks.register("verifyDevInstall") {
             .drop(1)
             .mapNotNull { line -> line.split('\t').takeIf { it.size == 2 && it[1] == "device" }?.get(0) }
         serials.forEach { serial ->
-            logger.lifecycle("verifyDevInstall: compiling com.dev.bitchord on $serial")
+            logger.lifecycle("verifyDevInstall: compiling com.dev.nikomusic on $serial")
             ProcessBuilder(
                 adbPath, "-s", serial, "shell", "cmd", "package", "compile",
-                "-m", "verify", "-f", "com.dev.bitchord",
+                "-m", "verify", "-f", "com.dev.nikomusic",
             ).inheritIO().start().waitFor()
         }
     }

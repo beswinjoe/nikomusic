@@ -54,6 +54,11 @@ jobs:
           echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
           echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
           echo "LISTEN_TOGETHER_SERVER=${{ secrets.LISTEN_TOGETHER_SERVER }}" >> local.properties
+          echo "PRESENCE_ENDPOINT=${{ vars.PRESENCE_ENDPOINT }}" >> local.properties
+          echo "GITHUB_REPOSITORY=${{ github.repository }}" >> local.properties
+          echo "WEBSITE_URL=${{ vars.WEBSITE_URL }}" >> local.properties
+          echo "COMMUNITY_URL=${{ vars.COMMUNITY_URL }}" >> local.properties
+          echo "JAM_INVITE_ORIGIN=${{ vars.JAM_INVITE_ORIGIN }}" >> local.properties
 
       # The local debug key, so this APK installs over a local dev build and
       # back. Fork PRs get no secrets; AGP then makes a throwaway key itself.
@@ -73,7 +78,7 @@ jobs:
       - name: Upload the TV dev APK
         uses: actions/upload-artifact@v4
         with:
-          name: bitchord-tv-dev-debug
+          name: nikomusic-tv-dev-debug
           path: tv/build/outputs/apk/dev/debug/*universal*.apk
 
       - name: Upload build reports

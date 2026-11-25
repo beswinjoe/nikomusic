@@ -5,7 +5,7 @@
 #
 # Why: the published AAR's libonnxruntime.so is ~28 MB per ABI, because it
 # carries every ONNX operator plus the WebGPU, NNAPI and XNNPACK execution
-# providers. BitChord runs two fixed models on the CPU provider, so almost all
+# providers. NikoMusic runs two fixed models on the CPU provider, so almost all
 # of it is dead weight in every APK.
 #
 # What changes and what does not: the Java classes and libonnxruntime4j_jni.so
@@ -21,7 +21,7 @@
 # opconfig.py (beside this script) and rerunning this.
 #
 # Runs on Linux, e.g. WSL:
-#   wsl -d Ubuntu -- bash /mnt/d/AndroidPorjects/BitChord/native/onnxruntime/build.sh
+#   wsl -d Ubuntu -- bash /mnt/d/AndroidPorjects/NikoMusic/native/onnxruntime/build.sh
 # Needs: git, python3, curl, unzip, zip, cmake >= 3.28 and ninja on PATH (or
 # CMAKE / NINJA), and the Linux Android NDK r27 (ANDROID_NDK).
 set -euo pipefail
@@ -73,7 +73,7 @@ for abi in "${ABIS[@]}"; do
         --build_shared_lib --enable_lto \
         `# The official JNI library links OrtSessionOptionsAppendExecutionProvider_Nnapi` \
         `# directly, and ORT only stubs it out on Apple builds; without NNAPI the` \
-        `# runtime would fail to load at all. BitChord never enables the provider.` \
+        `# runtime would fail to load at all. NikoMusic never enables the provider.` \
         --use_nnapi \
         --include_ops_by_config "$HERE/required_operators.config" \
         --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
@@ -90,7 +90,7 @@ READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 for abi in $(ls "$AAR_DIR/jni"); do
     if [[ ! " ${ABIS[*]} " =~ " $abi " ]]; then
-        # BitChord ships no other native code for this ABI, so no device runs it.
+        # NikoMusic ships no other native code for this ABI, so no device runs it.
         rm -rf "$AAR_DIR/jni/$abi"
         continue
     fi

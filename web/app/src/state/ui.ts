@@ -18,7 +18,7 @@ interface UiState {
   dismissInstallBanner: () => void;
 }
 
-const BANNER_KEY = 'bitchord:install-banner-dismissed';
+const BANNER_KEY = 'nikomusic:install-banner-dismissed';
 
 export const useUi = create<UiState>()((set) => ({
   sidePanel: null,
@@ -35,5 +35,5 @@ export const useUi = create<UiState>()((set) => ({
   },
 }));
 
-// For browser-driven tests, next to __bcPlayer.
-if (import.meta.env.DEV) Object.assign(window, { __bcUi: useUi });
+// For browser-driven tests, next to __nikoMusicPlayer.
+if (import.meta.env.DEV) Object.assign(window, { __nikoMusicUi: useUi });

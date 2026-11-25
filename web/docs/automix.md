@@ -11,7 +11,7 @@ that folder's `NOTICE.md`.
    from YouTube (the direct Opus URL), decoded at 44.1 kHz and analyzed in a
    worker with essentia.js: tempo, a beat grid for the opening and one for
    the end, downbeat, key (Camelot), energy curve, intro and outro. About
-   12–18 s per track; cached in IndexedDB (`bitchord-automix`).
+   12–18 s per track; cached in IndexedDB (`nikomusic-automix`).
 2. **Choosing.** The queue decides what comes next; only the playing and the
    next song are analysed. Until both are, nothing is planned or drawn on
    the seek bar, and a song whose mix wasn't ready plays to its end and
@@ -93,8 +93,8 @@ gain 0.3, or a seek past 250 ms.
 
 - `window.__automixSelfTest()` (dev builds) analyzes a synthetic 124 BPM
   A-minor loop. Expect BPM ≈ 123.93 and Camelot 8A.
-- Dev builds expose `window.__bcAutomix` (decks, context, the loop) and
-  `window.__bcAnalyzer`.
+- Dev builds expose `window.__nikoMusicAutomix` (decks, context, the loop) and
+  `window.__nikoMusicAnalyzer`.
 - `beatgrid.test.ts` covers the grid fit.
 
 Not checked yet:

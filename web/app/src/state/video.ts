@@ -27,7 +27,7 @@ interface VideoState {
   activeHeight: number | null;
 }
 
-const QUALITY_KEY = 'bitchord:video-quality';
+const QUALITY_KEY = 'nikomusic:video-quality';
 
 function storedQuality(): VideoQuality {
   const stored = localStorage.getItem(QUALITY_KEY);
@@ -73,8 +73,8 @@ export function getVideoElement(): HTMLVideoElement {
     element.playsInline = true;
     element.disablePictureInPicture = true;
     element.setAttribute('aria-hidden', 'true');
-    // For browser-driven tests, next to __bcAudio.
-    if (import.meta.env.DEV) Object.assign(window, { __bcVideo: element });
+    // For browser-driven tests, next to __nikoMusicAudio.
+    if (import.meta.env.DEV) Object.assign(window, { __nikoMusicVideo: element });
   }
   return element;
 }

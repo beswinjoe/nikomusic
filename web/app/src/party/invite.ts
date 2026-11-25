@@ -1,11 +1,18 @@
+import { config } from '@/config';
+
 /**
- * Party invites (JamInviteLink.kt): `https://bitchord.kushagrasingh.in/invite/<CODE>`,
- * optionally `?server=<custom server>`, and `bitchord://party/<CODE>`. On the
+ * Party invites (JamInviteLink.kt): `<origin>/invite/<CODE>`,
+ * optionally `?server=<custom server>`, and `nikomusic://party/<CODE>`. On the
  * web the first is a route of this app (`/invite/:code`).
  */
 
-export const INVITE_ORIGIN = 'https://bitchord.kushagrasingh.in';
+export const INVITE_ORIGIN = config.inviteOrigin;
 export const CODE_LENGTH = 6;
+
+function runtimeInviteOrigin(): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return /^https?:\/\//i.test(origin) ? origin.replace(/\/+$/, '') : '';
+}
 
 /** Letters and digits only, upper case; null unless it's six of them. */
 export function cleanCode(raw: string): string | null {
@@ -32,7 +39,7 @@ export function parseInvite(value: string): { code: string; serverUrl: string | 
     return null;
   }
   const server = sanitizeServerUrl(url.searchParams.get('server'));
-  if (url.protocol === 'bitchord:' && url.host.toLowerCase() === 'party') {
+  if (url.protocol === 'nikomusic:' && url.host.toLowerCase() === 'party') {
     const code = cleanCode(url.pathname.replace(/^\/+|\/+$/g, '') || url.searchParams.get('code') || '');
     return code ? { code, serverUrl: server } : null;
   }
@@ -41,9 +48,15 @@ export function parseInvite(value: string): { code: string; serverUrl: string | 
   return null;
 }
 
-/** The link to share (JamInviteLink.url): a custom server's own invite page, else the public site's. */
-export function inviteUrl(code: string, customServer: string | null): string {
+/** The link to share (JamInviteLink.url): a custom server's own invite page, else the configured/current web origin. */
+export function inviteUrl(
+  code: string,
+  customServer: string | null,
+  defaultOrigin = INVITE_ORIGIN || runtimeInviteOrigin(),
+): string {
+  const normalizedCode = code.toUpperCase();
   const base = customServer?.trim().replace(/\/+$/, '');
-  const origin = base && base.toLowerCase() !== INVITE_ORIGIN ? base : INVITE_ORIGIN;
-  return `${origin}/invite/${code.toUpperCase()}`;
+  const cleanDefault = defaultOrigin.trim().replace(/\/+$/, '');
+  const origin = base && base.toLowerCase() !== cleanDefault.toLowerCase() ? base : cleanDefault;
+  return origin ? `${origin}/invite/${normalizedCode}` : `nikomusic://party/${normalizedCode}`;
 }

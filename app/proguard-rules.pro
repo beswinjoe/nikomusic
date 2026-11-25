@@ -64,7 +64,7 @@
 -keep class io.ktor.** { *; }
 # Our own @Serializable models, whole: kotlinx.serialization's bundled rules
 # cover the generated serializers, and keeping the classes too costs little.
--keep @kotlinx.serialization.Serializable class com.music.bitchord.** { *; }
+-keep @kotlinx.serialization.Serializable class com.music.nikomusic.** { *; }
 -keep @kotlinx.serialization.Serializable class com.my.kizzy.** { *; }
 
 # ---- WebView bridges ------------------------------------------------------------
@@ -85,7 +85,7 @@
 -dontwarn jdk.dynalink.**
 -dontwarn org.ietf.jgss.**
 
-# ---- "BitChord for Wear OS": the ADB client that installs the watch app ----
+# ---- "NikoMusic for Wear OS": the ADB client that installs the watch app ----
 # libadb-android drives the pairing and transport through Conscrypt and SPAKE2,
 # both of which reach their native halves by name.
 -keep class io.github.muntashirakon.adb.** { *; }

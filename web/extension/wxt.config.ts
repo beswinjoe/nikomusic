@@ -3,8 +3,8 @@ import { defineConfig } from 'wxt';
 import { LYRIC_ORIGINS, patternOf } from './lib/lyricHosts';
 import { matchPatternsFor, SITE_ORIGINS } from './site.config';
 
-/** BITCHORD_STORE_BUILD=1 for a Chrome Web Store upload. */
-const STORE_BUILD = process.env.BITCHORD_STORE_BUILD === '1';
+/** NIKOMUSIC_STORE_BUILD=1 for a Chrome Web Store upload. */
+const STORE_BUILD = process.env.NIKOMUSIC_STORE_BUILD === '1';
 
 /**
  * Discord presence is user-token automation (prompt §7.3), so it is a build
@@ -15,6 +15,8 @@ const DISCORD_PRESENCE = process.env.DISCORD_PRESENCE ? process.env.DISCORD_PRES
 const DISCORD_ORIGINS = ['https://discord.com/*'];
 
 const devPublicKey = readFileSync(new URL('./dev-key/public-key.txt', import.meta.url), 'utf8').trim();
+const PROJECT_URL = (process.env.NIKOMUSIC_PROJECT_URL ?? '').trim();
+const FIREFOX_EXTENSION_ID = (process.env.NIKOMUSIC_FIREFOX_EXTENSION_ID ?? 'extension@nikomusic.local').trim();
 
 export default defineConfig({
   manifestVersion: 3,
@@ -23,12 +25,13 @@ export default defineConfig({
       // Checked against every sender at runtime (entrypoints/background.ts).
       __SITE_ORIGINS__: JSON.stringify(SITE_ORIGINS),
       __DISCORD_PRESENCE__: JSON.stringify(DISCORD_PRESENCE),
+      __PROJECT_URL__: JSON.stringify(PROJECT_URL),
     },
   }),
   manifest: ({ browser }) => ({
-    name: 'BitChord',
-    description: 'Connects the BitChord web player to YouTube Music, Spotify and Discord.',
-    homepage_url: SITE_ORIGINS[0],
+    name: 'Niko Music',
+    description: 'Connects the Niko Music web player to YouTube Music, Spotify and Discord.',
+    homepage_url: PROJECT_URL || SITE_ORIGINS[0],
     // `cookies` reads the YouTube session for signed-in requests (phase 5);
     // the cookies themselves never leave the extension (lib/ytAuth.ts).
     // `scripting` reads the Discord token from a discord.com tab, and only on
@@ -58,7 +61,7 @@ export default defineConfig({
       ? {
           browser_specific_settings: {
             gecko: {
-              id: 'extension@bitchord.kushagrasingh.in',
+              id: FIREFOX_EXTENSION_ID,
               strict_min_version: '128.0',
               data_collection_permissions: { required: ['none'] },
             },

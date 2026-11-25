@@ -1,0 +1,31 @@
+# Copy relevant entries into local.properties (which is gitignored) or supply
+# them as environment variables when building the Android / Android TV apps.
+# Every URL below defaults to empty ("") so unconfigured builds never target a
+# third-party or nonexistent endpoint.
+
+# Listen Together default party server (e.g. https://jam.example.com)
+#LISTEN_TOGETHER_SERVER=
+
+# Optional HTTPS web origin for Listen Together share links & App Links verification
+# Defaults to LISTEN_TOGETHER_SERVER if it uses https://, otherwise links use nikomusic://party/...
+#JAM_INVITE_ORIGIN=
+#JAM_INVITE_HOST=
+
+# Optional GitHub repository ("owner/repo") used to populate PROJECT_URL,
+# RELEASES_API_URL (in-app update checks), and AUTOMIX_MODELS_BASE_URL.
+#GITHUB_REPOSITORY=
+
+# Optional individual overrides (when not deriving from GITHUB_REPOSITORY)
+#PROJECT_URL=
+#RELEASES_API_URL=
+#AUTOMIX_MODELS_BASE_URL=
+#WEBSITE_URL=
+#COMMUNITY_URL=
+
+# Optional addon attestation & live presence endpoints
+#ADDON_AUTH_SERVER=
+#PRESENCE_ENDPOINT=
+
+# Last.fm API credentials (optional)
+#LASTFM_API_KEY=
+#LASTFM_SECRET=

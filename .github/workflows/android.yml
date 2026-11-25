@@ -25,10 +25,16 @@ jobs:
         echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
         echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
         echo "LISTEN_TOGETHER_SERVER=${{ secrets.LISTEN_TOGETHER_SERVER }}" >> local.properties
+        echo "ADDON_AUTH_SERVER=${{ vars.ADDON_AUTH_SERVER }}" >> local.properties
+        echo "PRESENCE_ENDPOINT=${{ vars.PRESENCE_ENDPOINT }}" >> local.properties
+        echo "GITHUB_REPOSITORY=${{ github.repository }}" >> local.properties
+        echo "WEBSITE_URL=${{ vars.WEBSITE_URL }}" >> local.properties
+        echo "COMMUNITY_URL=${{ vars.COMMUNITY_URL }}" >> local.properties
+        echo "JAM_INVITE_ORIGIN=${{ vars.JAM_INVITE_ORIGIN }}" >> local.properties
 
-        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > bitchord-release.jks
+        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > nikomusic-release.jks
         {
-          echo "storeFile=bitchord-release.jks"
+          echo "storeFile=nikomusic-release.jks"
           echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"
           echo "keyAlias=${{ secrets.KEY_ALIAS }}"
           echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
@@ -43,7 +49,7 @@ jobs:
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: bitchord-prod-release-signed
+        name: nikomusic-prod-release-signed
         path: app/build/outputs/apk/prod/release/*.apk
 
     # Built by the same assembleProdRelease, with the same key. The watch app
@@ -52,5 +58,5 @@ jobs:
     - name: Upload Wear OS APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: bitchord-wear-prod-release-signed
+        name: nikomusic-wear-prod-release-signed
         path: wearos/build/outputs/apk/prod/release/*.apk
