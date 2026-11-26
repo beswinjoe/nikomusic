@@ -491,10 +491,10 @@ private const val TILE_BLUR_OVERSCAN = 1.5f
 private const val TILE_VEIL_ALPHA = 0.18f
 
 /** The mark's width against the tile's. */
-private const val TILE_LOGO_FRACTION = 0.42f
+private const val TILE_LOGO_FRACTION = 0.25f
 
-/** ic_logo's viewport, 730 x 484 — see HomeTitle. */
-private const val LOGO_ASPECT = 730f / 484f
+/** ic_logo's viewport, 300 x 500 — see HomeTitle. */
+private const val LOGO_ASPECT = 300f / 500f
 
 /** One fixed width on every screen; about one and a half Home cards. */
 private val FEATURE_CARD_WIDTH = 240.dp

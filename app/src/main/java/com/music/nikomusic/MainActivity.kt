@@ -176,7 +176,6 @@ import com.music.nikomusic.ui.navigation.AppRoute
 import com.music.nikomusic.ui.screens.EqualizerPresetPage
 import com.music.nikomusic.ui.screens.SettingsChoicePage
 import com.music.nikomusic.ui.components.SpotifyImportAlert
-import com.music.nikomusic.ui.screens.WearOsScreen
 import com.music.nikomusic.ui.screens.DriveBackupScreen
 import com.music.nikomusic.ui.screens.DriveDevicesScreen
 import com.music.nikomusic.ui.screens.DriveBackupAlerts
@@ -933,7 +932,7 @@ private fun NikoMusicApp(
     val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
     val addonResults by viewModel.addonResults.collectAsStateWithLifecycle()
     // Collected rather than read once, so addon rows in search re-dim the
-    // moment the quality setting, the connection or the watch's cap moves.
+    // moment the quality setting, connection, or ceiling override moves.
     val addonCeiling = AppSettings.ceilingFor(
         wifi = AppSettings.audioQualityWifi.collectAsStateWithLifecycle().value,
         cellular = AppSettings.audioQualityCellular.collectAsStateWithLifecycle().value,
@@ -3228,8 +3227,6 @@ private fun NikoMusicApp(
                                 onCleared = { navigator.pop() },
                                 contentPadding = listPadding,
                             )
-                        } else if (pageRoute == AppRoute.WearOs) {
-                            WearOsScreen(contentPadding = listPadding)
                         } else if (pageRoute == AppRoute.DriveBackup) {
                             DriveBackupScreen(
                                 contentPadding = listPadding,
@@ -3303,7 +3300,6 @@ private fun NikoMusicApp(
                                 onTranslationLanguage = { showTranslationLanguage = true },
                                 onSources = { navigator.push(AppRoute.Sources) },
                                 onListenTogether = { navigator.push(AppRoute.ListenTogether) },
-                                onWearOs = { navigator.push(AppRoute.WearOs) },
                                 onSpotifyCanvasAuth = { showSpotifyCanvasAuth = true },
                                 onAppLanguage = { showAppLanguage = true },
                                 onEditSignatureApi = { editingSignatureApi = true },
@@ -4000,7 +3996,6 @@ private fun NikoMusicApp(
                         AppRoute.AccountScrobbling -> stringResource(R.string.account_scrobbling)
                         AppRoute.Sources -> stringResource(R.string.sources)
                         AppRoute.ListenTogether -> stringResource(R.string.listen_together)
-                        AppRoute.WearOs -> stringResource(R.string.wear_os_page_title)
                         AppRoute.DriveBackup -> stringResource(R.string.drive_backup_title)
                         AppRoute.DriveDevices -> stringResource(R.string.drive_devices_title)
                         AppRoute.Equalizer -> stringResource(R.string.equalizer)

@@ -5,7 +5,6 @@ import androidx.compose.ui.res.stringResource
 import com.music.nikomusic.R
 import com.music.nikomusic.data.model.Song
 import com.music.nikomusic.data.settings.AppSettings
-import com.music.nikomusic.data.settings.AudioQuality
 import com.music.nikomusic.data.sources.SourceRegistry
 import com.music.nikomusic.ui.components.InfoAlert
 import dev.chrisbanes.haze.HazeState
@@ -14,11 +13,6 @@ import dev.chrisbanes.haze.HazeState
  * Says why an addon row in the search results won't play, in an alert rather
  * than a toast, because the answer names the setting to change and a toast is
  * gone before it can be read.
- *
- * Two different reasons, told apart by asking what the listener chose for
- * this connection: anything below Lossless is theirs to change, while a
- * Lossless choice that still blocks the addon can only be the watch's
- * temporary cap — see [AppSettings.streamCeilingOverride].
  */
 @Composable
 fun AddonBlockedAlert(hazeState: HazeState, song: Song, onDismiss: () -> Unit) {
@@ -26,17 +20,13 @@ fun AddonBlockedAlert(hazeState: HazeState, song: Song, onDismiss: () -> Unit) {
         ?.let { (configId, _) -> SourceRegistry.config(configId)?.displayName }
         ?: stringResource(R.string.search_source_addons)
     val metered = AppSettings.meteredConnection.value == true
-    val chosen = if (metered) AppSettings.audioQualityCellular.value else AppSettings.audioQualityWifi.value
-    val message = if (chosen == AudioQuality.LOSSLESS) {
-        stringResource(R.string.addon_blocked_watch, addon)
-    } else {
-        stringResource(
-            R.string.addon_blocked_quality,
-            stringResource(if (metered) R.string.mobile_data else R.string.wifi),
-            stringResource(chosen.labelRes),
-            addon,
-        )
-    }
+    val effectiveQuality = AppSettings.effectiveAudioQuality
+    val message = stringResource(
+        R.string.addon_blocked_quality,
+        stringResource(if (metered) R.string.mobile_data else R.string.wifi),
+        stringResource(effectiveQuality.labelRes),
+        addon,
+    )
     InfoAlert(
         hazeState = hazeState,
         title = stringResource(R.string.addon_blocked_title),

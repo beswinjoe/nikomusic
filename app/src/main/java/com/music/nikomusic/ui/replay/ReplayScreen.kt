@@ -65,7 +65,7 @@ import com.music.nikomusic.ui.components.PAGE_GUTTER
 import com.music.nikomusic.ui.icons.NikoMusicIcons
 import com.music.nikomusic.ui.player.MeshGradientBackground
 import com.music.nikomusic.ui.player.rememberArtworkColors
-import com.music.nikomusic.ui.theme.AccentRed
+import com.music.nikomusic.ui.theme.AccentGreen
 
 /** Whether the Replay page is being shown in dark mode (vs light). */
 @Composable
@@ -488,7 +488,7 @@ private fun ReplayChartRow(row: ReplayRow, circular: Boolean, dark: Boolean, onC
             .padding(horizontal = PAGE_GUTTER + 4.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RankBadge(row.rank, AccentRed)
+        RankBadge(row.rank, AccentGreen)
         if (row.artworkUrl != null) {
             AsyncImage(
                 model = row.artworkUrl.artworkAt(ROW_ART_PX),

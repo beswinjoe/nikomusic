@@ -76,7 +76,7 @@ import com.music.nikomusic.data.stats.ReplaySummary
 import com.music.nikomusic.ui.player.MeshGradientBackground
 import com.music.nikomusic.ui.player.MeshPalette
 import com.music.nikomusic.ui.player.rememberArtworkColors
-import com.music.nikomusic.ui.theme.AccentRed
+import com.music.nikomusic.ui.theme.AccentGreen
 import kotlinx.coroutines.launch
 
 /**
@@ -417,7 +417,7 @@ private fun StoryChrome(
                 painter = painterResource(R.drawable.ic_logo),
                 contentDescription = null,
                 tint = Color.White.copy(alpha = 0.9f),
-                modifier = Modifier.size(width = 26.dp, height = 17.dp),
+                modifier = Modifier.size(width = 12.dp, height = 20.dp),
             )
             Spacer(Modifier.width(7.dp))
             Text(
@@ -650,7 +650,7 @@ private fun ColumnScope.Leaderboard(
             Modifier.fillMaxWidth().padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RankBadge(row.rank, AccentRed)
+            RankBadge(row.rank, AccentGreen)
             Cover(row.artworkUrl, row.title, 36.dp, shape, ROW_ART_PX)
             Spacer(Modifier.width(12.dp))
             Text(
@@ -699,7 +699,7 @@ private fun ColumnScope.Genres(summary: ReplaySummary, headline: List<HeadlineRu
             Modifier.fillMaxWidth().padding(vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RankBadge(row.rank, AccentRed)
+            RankBadge(row.rank, AccentGreen)
             Text(
                 text = row.title,
                 style = MaterialTheme.typography.titleMedium,

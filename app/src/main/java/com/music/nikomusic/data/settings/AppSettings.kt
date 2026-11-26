@@ -939,11 +939,9 @@ object AppSettings {
     val smartTransitionWindow = MutableStateFlow<TransitionWindow?>(null)
 
     /**
-     * A temporary cap on [effectiveAudioQuality], for as long as something other
-     * than this phone's own speaker is playing — the NikoMusic watch app, whose
-     * audio goes over a Bluetooth link that cannot keep up with lossless. Never
-     * persisted, never shown: the listener's own settings are untouched, and
-     * apply again the moment the phone takes the music back.
+     * A temporary cap on [effectiveAudioQuality]. Never persisted and never
+     * shown: the listener's own settings remain untouched and apply again once
+     * the override clears.
      */
     val streamCeilingOverride = MutableStateFlow<AudioQuality?>(null)
 

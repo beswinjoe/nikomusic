@@ -58,7 +58,7 @@ function Scrubber() {
           <MixWindowHighlight />
           <div
             ref={bar}
-            className="relative size-full origin-left scale-x-(--progress) bg-secondary transition-[background-color] duration-120 ease-in [--progress:0] group-hover/hit:bg-primary group-data-dragging/scrub:bg-primary"
+            className="relative size-full origin-left scale-x-(--progress) bg-key transition-[background-color] duration-120 ease-in [--progress:0] group-hover/hit:bg-key-rollover group-data-dragging/scrub:bg-key-rollover"
           />
         </div>
       </div>

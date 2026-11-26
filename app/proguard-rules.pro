@@ -43,12 +43,8 @@
 -keep class ai.onnxruntime.** { *; }
 -keep class com.hierynomus.** { *; }
 -keep class net.engio.mbassy.** { *; }
-# BouncyCastle needs no keep rule: SMBJ (BCSecurityProvider), libadb (pairing's
-# HKDF/AES-GCM) and WatchInstaller (the X.509 builder) all call it directly, so
-# R8 traces what they use. Its only lookups by name are inside its JCA provider
-# packages, and nothing registers BouncyCastleProvider — the certificate is
-# signed through the platform's own providers. Keep an exact class here if a
-# new use reaches it by name.
+# BouncyCastle needs no keep rule: SMBJ (BCSecurityProvider) calls it directly, so
+# R8 traces what it uses. Keep an exact class here if a new use reaches it by name.
 -dontwarn org.bouncycastle.**
 -keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }
 # The vendored FFmpeg extension's JNI calls back into this by name to grow
@@ -84,13 +80,3 @@
 -dontwarn javax.script.**
 -dontwarn jdk.dynalink.**
 -dontwarn org.ietf.jgss.**
-
-# ---- "NikoMusic for Wear OS": the ADB client that installs the watch app ----
-# libadb-android drives the pairing and transport through Conscrypt and SPAKE2,
-# both of which reach their native halves by name.
--keep class io.github.muntashirakon.adb.** { *; }
--keep class org.conscrypt.** { *; }
--keep class com.android.org.conscrypt.** { *; }
--dontwarn org.conscrypt.**
--dontwarn com.android.org.conscrypt.**
--dontwarn io.github.muntashirakon.adb.**

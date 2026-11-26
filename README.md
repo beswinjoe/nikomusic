@@ -79,7 +79,7 @@
 
 </div>
 
-- **Android & Android TV**: Copy `local.properties.example` to `local.properties` and set any optional integration endpoints (`LISTEN_TOGETHER_SERVER`, `GITHUB_REPOSITORY`, `PRESENCE_ENDPOINT`, `JAM_INVITE_ORIGIN`), then build with `./gradlew assembleDevDebug` (see [Contributing Guide](CONTRIBUTING.md)).
+- **Android**: Copy `local.properties.example` to `local.properties` and set any optional integration endpoints (`LISTEN_TOGETHER_SERVER`, `GITHUB_REPOSITORY`, `PRESENCE_ENDPOINT`, `JAM_INVITE_ORIGIN`), then build with `./gradlew assembleDevDebug` (see [Contributing Guide](CONTRIBUTING.md)).
 - **Web App & Extension**: See [`web/README.md`](web/README.md) and [`web/app/.env.example`](web/app/.env.example).
 - **Listen Together Backend**: See [`backend/README.md`](backend/README.md).
 

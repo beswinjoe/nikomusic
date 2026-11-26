@@ -164,8 +164,7 @@ private fun MoodGenreCard(
  * redrawn as a duotone of the stripe's colour so every card reads as one
  * tinted sleeve rather than a photo pasted onto a swatch.
  *
- * Only the artwork: the caller sizes, clips and makes it clickable, which is
- * how the TV app wraps the same sleeve in its own focus treatment.
+ * Only the artwork: the caller sizes, clips and makes it clickable.
  */
 @Composable
 fun MoodGenreSleeve(

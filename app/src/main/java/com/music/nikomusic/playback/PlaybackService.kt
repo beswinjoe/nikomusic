@@ -81,7 +81,6 @@ import com.music.nikomusic.playback.cast.CastController
 import com.music.nikomusic.playback.cast.CastPlayback
 import com.music.nikomusic.playback.cast.CastSink
 import com.music.nikomusic.playback.cast.RemoteSpeaker
-import com.music.nikomusic.playback.cast.Speakers
 import com.music.nikomusic.playback.cast.CastStream
 import com.music.nikomusic.playback.audio.PrecisionAudioSink
 import com.music.nikomusic.playback.dsd.DsdExtractorsFactory
@@ -159,7 +158,6 @@ import com.music.nikomusic.ui.player.discardBlockedAutoMixAmbient
 import com.music.nikomusic.ui.player.prefetchAutoMixArtwork
 import com.music.nikomusic.widget.MediaWidget
 import com.music.nikomusic.widget.MediaWidgetSnapshot
-import com.music.nikomusic.wear.WearBridge
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -220,9 +218,6 @@ const val ACTION_SWAP_VERSION = "com.music.nikomusic.action.SWAP_VERSION"
 const val EXTRA_SWAP_MEDIA_ITEM = "nikomusic.swap.media_item"
 
 /** Session command used by the media notification's and the 4×1 widget's Favorite button. */
-/** How long the service may stay in the foreground, paused, while the watch plays. */
-private const val WATCH_SESSION_FOREGROUND_MS = 6 * 60 * 60 * 1000L
-
 const val ACTION_TOGGLE_FAVORITE = "com.music.nikomusic.action.TOGGLE_FAVORITE"
 
 /** Session command used by the media notification's and the 4×1 widget's Shuffle button. */
@@ -829,18 +824,6 @@ class PlaybackService : MediaLibraryService() {
     )
 
     /**
-     * The NikoMusic watch app as the speaker — the same model as Cast: the phone
-     * keeps the queue paused, the watch plays it and owns the clock. See
-     * [WearBridge.createSpeaker].
-     */
-    private val watchSpeaker by lazy {
-        WearBridge.createSpeaker(this, scope, localPlayer = { player }, onChanged = { publishWidgetState() })
-    }
-
-    /** Every remote speaker, as the one the session player reports. */
-    private val speakers by lazy { Speakers(listOf(castPlayback, watchSpeaker)) }
-
-    /**
      * Binds playback to a Listen Together party, when there is one.
      *
      * Here rather than in the UI because a party has to outlive the app
@@ -885,7 +868,6 @@ class PlaybackService : MediaLibraryService() {
         val sourceConfigs: List<*>,
         val routeRevision: Long,
         val castActive: Boolean,
-        val watchActive: Boolean,
         val outputId: Int?,
         val selectedOutputId: Int?,
         val partyCode: String?,
@@ -1089,7 +1071,7 @@ class PlaybackService : MediaLibraryService() {
             // speaker — an internal path, since the session player's door
             // already sends a listener's play to the receiver. The phone goes
             // quiet again and the receiver is asked instead.
-            if (playWhenReady) player?.let(speakers::onLocalStartedPlaying)
+            if (playWhenReady) player?.let(castPlayback::onLocalStartedPlaying)
             publishWidgetState(playing = playWhenReady)
             // The only place the *reason* can be read. A party has to tell a
             // pause the listener asked for from one another app imposed, and
@@ -1115,9 +1097,6 @@ class PlaybackService : MediaLibraryService() {
                 lastSeekAt = SystemClock.elapsedRealtime()
                 if (exoPlayer.isPlaying) pushDiscordPresence(exoPlayer)
                 updateLyricSubtitle()
-                // The watch extrapolates its progress ring from the last
-                // position it was given, the same way Discord does.
-                WearBridge.republish(this@PlaybackService, exoPlayer)
             }
         }
 
@@ -1148,7 +1127,7 @@ class PlaybackService : MediaLibraryService() {
             // catching up, which [CastPlayback] tells apart by track.
             // A queue inverse loads the receiver explicitly with the saved clock/play state.
             // Do not let the ordinary transition path race it with a zero-position load.
-            if (!isQueueUndoRestoring(exoPlayer)) speakers.onLocalTransition(mediaItem, reason)
+            if (!isQueueUndoRestoring(exoPlayer)) castPlayback.onLocalTransition(mediaItem, reason)
 
             // No crossfade case to allow for here any more. A blended advance
             // never reaches this callback — the incoming track starts as the
@@ -1238,8 +1217,7 @@ class PlaybackService : MediaLibraryService() {
             invalidateQueueUndo()
             val previous = lastRepeatMode
             lastRepeatMode = repeatMode
-            speakers.onLocalRepeatChanged(repeatMode)
-            player?.let { WearBridge.republish(this@PlaybackService, it) }
+            castPlayback.onLocalRepeatChanged(repeatMode)
             // Repeat-one makes the "next" track this one again.
             player?.let { activeLoudness().nextMediaId = nextMediaIdOf(it) }
             // Repeat-all loops the queue as it stands; AutoPlay's tracks are the
@@ -1289,7 +1267,7 @@ class PlaybackService : MediaLibraryService() {
             activeLoudness().nextMediaId = nextMediaIdOf(exoPlayer)
             if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
                 crossfade?.checkAutoMixVisualTimeline(exoPlayer)
-                speakers.onLocalQueueChanged()
+                castPlayback.onLocalQueueChanged()
                 saveQueueSnapshot(exoPlayer)
                 refreshCustomLayouts()
                 // Queue edits can remove AutoPlay's whole tail while leaving
@@ -1470,17 +1448,6 @@ class PlaybackService : MediaLibraryService() {
                     publishWidgetState()
                     (mediaSession?.player as? SessionPlayer)?.onShuffleChanged(enabled)
                 }
-        }
-        // While the watch is the speaker this process serves its audio, and a
-        // paused service drops out of the foreground after ten minutes — after
-        // which Android may freeze the process mid-stream. Held up for the
-        // length of the session instead.
-        scope.launch {
-            WearBridge.watchSession.collect { onWatch ->
-                setForegroundServiceTimeoutMs(
-                    if (onWatch) WATCH_SESSION_FOREGROUND_MS else DEFAULT_FOREGROUND_SERVICE_TIMEOUT_MS,
-                )
-            }
         }
         // Signing in or out adds or removes Like everywhere at once.
         scope.launch {
@@ -1900,8 +1867,6 @@ class PlaybackService : MediaLibraryService() {
             DsdExtractorsFactory(),
         )
             .setLoadErrorHandlingPolicy(PermanentAwareLoadErrorPolicy())
-        // The watch, when it is the speaker, reads tracks through this same chain.
-        WearBridge.attachStreams(AudioCache.playbackFactory(defaultDataSourceFactory))
 
         configuredFloatOutput = shouldEnableFloatOutput()
         val exoPlayer = buildPlayer(
@@ -2048,7 +2013,7 @@ class PlaybackService : MediaLibraryService() {
         onQueueUndoRouteChanged = { queueUndoRouteRevision++; invalidateQueueUndo() },
         deferPlayToParty = { partySync?.shouldDeferPlay() == true },
         lockedTransport = { playing -> partySync?.onLockedTransport(playing) == true },
-        cast = speakers,
+        cast = castPlayback,
         onShuffleRequest = ::toggleShuffleFromSession,
     ) { lastPublishedSubtitle }
 
@@ -2945,7 +2910,7 @@ class PlaybackService : MediaLibraryService() {
             items = (0 until raw.mediaItemCount).map(raw::getMediaItemAt),
             currentIndex = raw.currentMediaItemIndex,
             repeatMode = raw.repeatMode,
-            playWhenReady = if (speakers.active) speakers.playWhenReady else raw.playWhenReady,
+            playWhenReady = if (castPlayback.active) castPlayback.playWhenReady else raw.playWhenReady,
             contextToken = boundedContextToken,
             contextRegistryToken = context?.contextToken,
             contextVersion = context?.version,
@@ -2955,7 +2920,6 @@ class PlaybackService : MediaLibraryService() {
             sourceConfigs = SourceRegistry.configs.value.toList(),
             routeRevision = queueUndoRouteRevision,
             castActive = castPlayback.active,
-            watchActive = watchSpeaker.active,
             outputId = resolveActiveOutputDevice()?.id,
             selectedOutputId = AudioRouting.selectedId.value,
             partyCode = party.code,
@@ -3055,7 +3019,6 @@ class PlaybackService : MediaLibraryService() {
         before.sourceConfigs == current.sourceConfigs &&
         before.routeRevision == current.routeRevision &&
         before.castActive == current.castActive &&
-        before.watchActive == current.watchActive &&
         before.outputId == current.outputId &&
         before.selectedOutputId == current.selectedOutputId &&
         before.partyCode == current.partyCode &&
@@ -3118,7 +3081,7 @@ class PlaybackService : MediaLibraryService() {
         val indices = resolveQueueEntryIndices(before, identities, contextWindow)
         if (indices.isEmpty()) return false
         val raw = before.player
-        val oldPosition = (if (speakers.active) speakers.positionMs else raw.currentPosition).coerceAtLeast(0L)
+        val oldPosition = (if (castPlayback.active) castPlayback.positionMs else raw.currentPosition).coerceAtLeast(0L)
         val removedCurrent = before.currentIndex in indices
         invalidateQueueUndo()
         boundedContextWindow = contextWindow
@@ -3177,7 +3140,7 @@ class PlaybackService : MediaLibraryService() {
             }
         } else listOf(requestedIndex)
         if (indices.isEmpty()) return false
-        val oldPosition = (if (speakers.active) speakers.positionMs else raw.currentPosition).coerceAtLeast(0L)
+        val oldPosition = (if (castPlayback.active) castPlayback.positionMs else raw.currentPosition).coerceAtLeast(0L)
         val removedCurrent = before.currentIndex in indices
         invalidateQueueUndo()
         val mutationSettled = CompletableDeferred<Unit>()
@@ -3231,7 +3194,7 @@ class PlaybackService : MediaLibraryService() {
         val reinsertOnly = !edit.removedCurrent &&
             isQueueUndoSubsequence(edit.after.items, before.items)
         val position = if (edit.removedCurrent) edit.positionMs else
-            (if (speakers.active) speakers.positionMs else raw.currentPosition).coerceAtLeast(0L)
+            (if (castPlayback.active) castPlayback.positionMs else raw.currentPosition).coerceAtLeast(0L)
         invalidateQueueUndo() // Consume before any callbacks: an inverse is never itself undoable.
         boundedTopUpJob?.cancel()
         boundedTopUpJob = null
@@ -3256,9 +3219,9 @@ class PlaybackService : MediaLibraryService() {
                 // Never use the session wrapper's indexed seek: that is a semantic jump.
                 raw.setMediaItems(before.items, before.currentIndex, position)
                 raw.prepare()
-                raw.playWhenReady = !speakers.active && before.playWhenReady
-                if (speakers.active &&
-                    !speakers.restoreQueueCurrent(raw.currentMediaItem, position, before.playWhenReady)
+                raw.playWhenReady = !castPlayback.active && before.playWhenReady
+                if (castPlayback.active &&
+                    !castPlayback.restoreQueueCurrent(raw.currentMediaItem, position, before.playWhenReady)
                 ) return false
             }
             // Keep the guard through the queued onEvents batch, not just the setters.
@@ -7011,8 +6974,7 @@ class PlaybackService : MediaLibraryService() {
             artist = song.artist,
             artworkUrl = song.thumbnailUrl,
             // playWhenReady, not isPlaying — see MediaWidgetSnapshot.isPlaying.
-            // Through the session player, which answers for Cast or the watch
-            // while one of them is the speaker.
+            // Through the session player, which answers for Cast while it is the speaker.
             isPlaying = playing ?: reported.playWhenReady,
             hasPrevious = exoPlayer.hasPreviousMediaItem(),
             hasNext = exoPlayer.hasNextMediaItem(),
@@ -7022,8 +6984,6 @@ class PlaybackService : MediaLibraryService() {
         )
         MediaWidgetSnapshot.save(this, snapshot)
         MediaWidget.refresh(this)
-        // The watch app follows the widget — same moments, same snapshot.
-        WearBridge.publish(this, snapshot, reported, playing)
     }
 
     private var foreignCachePurgeJob: Job? = null
@@ -7415,21 +7375,22 @@ class PlaybackService : MediaLibraryService() {
                     // repeat: it returns immediately unless the track is
                     // pending and nothing is already looking.
                     lookForBetterCopy(player)
-                } else if (speakers.active) {
-                    // On a speaker (Cast, the watch) the phone's player is held paused on
-                    // purpose and the receiver owns the clock, so the branch above never runs and
-                    // none of that listening reached the listening record. The receiver's own
-                    // isPlaying is the tick here; the phone's current item is the receiver's track
-                    // (it follows the receiver), and the receiver knows the real length.
-                    val playingRemotely = speakers.isPlaying
+                } else if (castPlayback.active) {
+                    // On Cast the phone's player is held paused on purpose and
+                    // the receiver owns the clock, so the branch above never runs
+                    // and none of that listening reached the listening record. The
+                    // receiver's own isPlaying is the tick here; the phone's current
+                    // item is the receiver's track (it follows the receiver), and the
+                    // receiver knows the real length.
+                    val playingRemotely = castPlayback.isPlaying
                     if (playingRemotely) {
                         player?.currentMediaItem?.toSong()?.let {
-                            val length = speakers.durationMs.takeIf { d -> d != C.TIME_UNSET && d > 0 }
+                            val length = castPlayback.durationMs.takeIf { d -> d != C.TIME_UNSET && d > 0 }
                                 ?: (player?.duration ?: 0L)
                             ListeningRecorder.onSample(it, length)
                         }
                     } else if (remoteSampling) {
-                        // Paused on the speaker: close the gap like a local pause does.
+                        // Paused on the receiver: close the gap like a local pause does.
                         ListeningRecorder.onStopped()
                     }
                     remoteSampling = playingRemotely
@@ -8605,8 +8566,6 @@ class PlaybackService : MediaLibraryService() {
         invalidateQueueUndo()
         queueUndoRestoreBatch = null
         queueUndoMutationSettled = null
-        WearBridge.attachStreams(null)
-        WearBridge.releaseSpeaker()
         // Let go of the receiver's player but leave its session alone: a
         // service that idles out while casting is not the listener choosing to
         // stop, and the next one picks the session up where it was.

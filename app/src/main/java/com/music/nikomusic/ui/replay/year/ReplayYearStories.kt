@@ -447,7 +447,7 @@ private fun YearChrome(
                 painter = painterResource(R.drawable.ic_logo),
                 contentDescription = null,
                 tint = Color.White.copy(alpha = 0.9f),
-                modifier = Modifier.size(width = 26.dp, height = 17.dp),
+                modifier = Modifier.size(width = 12.dp, height = 20.dp),
             )
             Spacer(Modifier.width(7.dp))
             Text(

@@ -10,7 +10,7 @@
     "dev": "pnpm --filter @nikomusic/app dev",
     "dev:ext": "pnpm --filter @nikomusic/extension dev",
     "dev:ext:firefox": "pnpm --filter @nikomusic/extension dev:firefox",
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @nikomusic/extension package && pnpm --filter @nikomusic/app build",
     "build:site": "pnpm --filter @nikomusic/extension package && pnpm --filter @nikomusic/app build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

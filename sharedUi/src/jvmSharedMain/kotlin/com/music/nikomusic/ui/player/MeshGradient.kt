@@ -406,9 +406,8 @@ private suspend fun loadArtworkPaletteBitmap(context: PlatformContext, imageUrl:
 private const val DRIFT_RADIANS = (PI * 0.45f).toFloat()
 
 /**
- * The player's four mesh colours for [bitmap], for surfaces that draw the mesh
- * somewhere this code doesn't run — the watch app is sent these rather than
- * running Palette on a watch.
+ * The player's four mesh colours for [bitmap], for surfaces such as waveform
+ * accents that draw colours outside [artworkMeshBackground].
  */
 fun artworkMeshColors(bitmap: ImageBitmap): List<Color> = paletteOf(bitmap)
 

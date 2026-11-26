@@ -132,7 +132,7 @@ export default function SettingsPage() {
         <section className={settingsUi.group}>
           <LinkRow
             to="/settings/listen-together"
-            icon={<Glyph Icon={Users} color="#fa2d48" />}
+            icon={<Glyph Icon={Users} color="#1db954" />}
             title="Listen Together"
             value={party.code ? `In party ${party.code}` : 'Listen in sync with friends'}
           />

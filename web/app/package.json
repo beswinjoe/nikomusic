@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm --prefix ../extension run package",
     "dev": "vite",
     "build": "tsc -p . && vite build",
     "preview": "vite preview",

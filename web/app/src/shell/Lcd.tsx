@@ -166,7 +166,7 @@ export function Lcd() {
           <span className={titleClass}>{status === 'loading' ? 'Loading…' : ''}</span>
         )}
         {status === 'error' ? (
-          <span className="truncate type-callout-medium text-key">{error}</span>
+          <span className="truncate type-callout-medium text-red">{error}</span>
         ) : (
           <span className="truncate type-callout-medium text-secondary">
             {artist ? <Credits videoId={videoId} line={artist} artists={track?.artists ?? []} /> : status === 'loading' ? 'Loading…' : ''}
@@ -203,7 +203,7 @@ function Progress() {
         aria-hidden="true"
       >
         <MixWindowHighlight />
-        <div ref={bar} className="relative size-full origin-left scale-x-(--progress) bg-secondary [--progress:0]" />
+        <div ref={bar} className="relative size-full origin-left scale-x-(--progress) bg-key transition-colors duration-100 group-hover/scrub:bg-key-rollover group-data-dragging/scrub:bg-key-rollover [--progress:0]" />
       </div>
     </div>
   );

@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { createReadStream, readFileSync, statSync } from 'node:fs';
+import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig, loadEnv } from 'vite';
+import { type Connect, type Plugin, defineConfig, loadEnv } from 'vite';
 
 // The development extension's id, pinned by its manifest `key`
 // (web/extension/dev-key/). Read at build time so the page can message it.
@@ -24,10 +25,78 @@ function requirePartyServer(mode: string): void {
   }
 }
 
+function contentTypeFor(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.zip':
+      return 'application/zip';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+// Never let missing `/downloads/*` assets fall through Vite's SPA fallback to index.html.
+function attachDownloadsMiddleware(middlewares: Connect.Server, downloadsDir: string): void {
+  const root = resolve(downloadsDir);
+  middlewares.use((req, res, next) => {
+    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (pathname !== '/downloads' && !pathname.startsWith('/downloads/')) return next();
+
+    const fail = (status: number, body: string) => {
+      res.statusCode = status;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.end(body);
+    };
+
+    if (pathname === '/downloads' || pathname.endsWith('/')) return fail(404, 'Not found');
+    if (req.method !== 'GET' && req.method !== 'HEAD') return fail(405, 'Method not allowed');
+
+    let relPath: string;
+    try {
+      relPath = decodeURIComponent(pathname.slice('/downloads/'.length));
+    } catch {
+      return fail(400, 'Invalid download path');
+    }
+
+    const filePath = resolve(root, relPath);
+    if (!filePath.startsWith(`${root}${sep}`)) return fail(403, 'Forbidden');
+
+    const stat = statSync(filePath, { throwIfNoEntry: false });
+    if (!stat?.isFile()) return fail(404, 'Download artifact not found');
+
+    res.statusCode = 200;
+    res.setHeader('Content-Type', contentTypeFor(filePath));
+    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    createReadStream(filePath).pipe(res);
+  });
+}
+
+function downloadsGuardPlugin(): Plugin {
+  const appRoot = fileURLToPath(new URL('.', import.meta.url));
+  return {
+    name: 'nikomusic-downloads-guard',
+    configureServer(server) {
+      attachDownloadsMiddleware(server.middlewares, resolve(appRoot, 'public/downloads'));
+    },
+    configurePreviewServer(server) {
+      const outDir = resolve(appRoot, server.config.build.outDir, 'downloads');
+      attachDownloadsMiddleware(server.middlewares, outDir);
+    },
+  };
+}
+
 export default defineConfig(({ command, mode }) => {
   if (command === 'build') requirePartyServer(mode);
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [downloadsGuardPlugin(), react(), tailwindcss()],
     define: {
       DEV_EXTENSION_ID: JSON.stringify(devExtensionId()),
     },

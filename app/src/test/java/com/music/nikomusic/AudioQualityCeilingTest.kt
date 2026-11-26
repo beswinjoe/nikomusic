@@ -50,7 +50,7 @@ class AudioQualityCeilingTest {
     }
 
     @Test
-    fun `the watch override caps a lossless ceiling`() {
+    fun `stream ceiling override caps a lossless ceiling`() {
         val wifi = AppSettings.audioQualityWifi.value
         val metered = AppSettings.meteredConnection.value
         val override = AppSettings.streamCeilingOverride.value

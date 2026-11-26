@@ -1,5 +1,5 @@
 # Copy relevant entries into local.properties (which is gitignored) or supply
-# them as environment variables when building the Android / Android TV apps.
+# them as environment variables when building the Android app.
 # Every URL below defaults to empty ("") so unconfigured builds never target a
 # third-party or nonexistent endpoint.
 

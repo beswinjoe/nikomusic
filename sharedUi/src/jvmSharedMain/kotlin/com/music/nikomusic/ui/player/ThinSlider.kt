@@ -96,6 +96,7 @@ fun ThinSlider(
     idleHeight: Dp = 7.dp,
     activeHeight: Dp = 12.dp,
     activeColor: Color = Color.White.copy(alpha = 0.92f),
+    draggingActiveColor: Color = activeColor,
     inactiveColor: Color = Color.White.copy(alpha = 0.26f),
     /** Halfway between the two track colours: visible against unplayed, invisible under played. */
     markerColor: Color = Color.White.copy(alpha = 0.5f),
@@ -248,9 +249,10 @@ fun ThinSlider(
             // dot under the sheen.
             val filled = size.width * fraction * fillFactor
             if (filled > 0f) {
-                val alpha = if (dragging) activeColor.alpha else mixPulse?.alpha(activeColor.alpha) ?: activeColor.alpha
+                val fillTint = if (dragging) draggingActiveColor else activeColor
+                val alpha = if (dragging) fillTint.alpha else mixPulse?.alpha(fillTint.alpha) ?: fillTint.alpha
                 drawRoundRect(
-                    color = activeColor.copy(alpha = alpha),
+                    color = fillTint.copy(alpha = alpha),
                     size = Size(
                         filled.coerceAtLeast(size.height * fillFactor).coerceAtMost(size.width),
                         size.height,

@@ -19,12 +19,15 @@ import androidx.compose.ui.unit.sp
 import com.music.nikomusic.R
 import com.music.nikomusic.data.settings.AppFont
 
-// Apple Music's signature red. No longer the primary accent, but kept for the
-// spots (Replay's rank badge) that want that specific red regardless of theme.
+// Spotify-inspired accent green for active controls, indicators, and badges.
+val AccentGreen = Color(0xFF1DB954)
+val AccentGreenActive = Color(0xFF1ED760)
+
+// Kept as alias for any external caller; primary accent now uses [AccentGreen].
 val AccentRed = Color(0xFFFA2D48)
 
 private val DarkColors = darkColorScheme(
-    primary = Color.White,
+    primary = AccentGreen,
     onPrimary = Color.Black,
     background = Color.Black,
     onBackground = Color.White,
@@ -36,8 +39,8 @@ private val DarkColors = darkColorScheme(
 )
 
 private val LightColors = lightColorScheme(
-    primary = Color.Black,
-    onPrimary = Color.White,
+    primary = AccentGreen,
+    onPrimary = Color.Black,
     background = Color.White,
     onBackground = Color.Black,
     surface = Color(0xFFF7F7F9),

@@ -30,11 +30,15 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-async function fetchPublished(): Promise<PublishedExtension | null> {
+export async function fetchPublished(): Promise<PublishedExtension | null> {
   const response = await fetch(config.extensionManifestUrl, { cache: 'no-store' });
   if (!response.ok) return null;
-  const body = (await response.json()) as Partial<PublishedExtension>;
-  return typeof body.version === 'string' && body.files ? (body as PublishedExtension) : null;
+  try {
+    const body = (await response.json()) as Partial<PublishedExtension>;
+    return typeof body.version === 'string' && body.files ? (body as PublishedExtension) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

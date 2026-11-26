@@ -78,7 +78,6 @@ import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Tv
-import androidx.compose.material.icons.rounded.Watch
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -250,8 +249,9 @@ internal fun PlayerScrubber(
             mixing = mixing,
             mixPulse = mixPulse,
             transitionWindow = transitionWindow,
-            vibrant = ink != null,
-            activeColor = ink?.active ?: Color.White.copy(alpha = 0.92f),
+            vibrant = false,
+            activeColor = Color(0xFF1DB954),
+            draggingActiveColor = Color(0xFF1ED760),
             inactiveColor = ink?.inactive ?: Color.White.copy(alpha = 0.26f),
             markerColor = ink?.marker ?: Color.White.copy(alpha = 0.5f),
         )
@@ -371,7 +371,7 @@ internal fun PlaybackQualityLabel(
     // same computation SourceResolver.requestForNow() makes, mirrored here so
     // "Loading lossless" only appears when a lossless fetch is actually in
     // flight, not on every buffering YouTube track. Override included: while
-    // the watch caps the stream nothing lossless is being looked for.
+    // a ceiling override caps the stream nothing lossless is being looked for.
     val chosenQuality = if (metered == true) cellularQuality else wifiQuality
     val effectiveQuality = ceilingOverride
         ?.takeIf { it.ordinal < chosenQuality.ordinal }
@@ -1282,7 +1282,7 @@ private val PILL_SEGMENT_WIDTH = 64.dp
  * These are the numbers at which they look like a matched pair. Every other
  * output glyph is fitted to the box Headphones fills at that size — 75% of it
  * tall, at most 85% wide — either in its own drawable or by
- * [PILL_OUTPUT_WIDE_SIZE] / [PILL_OUTPUT_TALL_SIZE] for the Material ones.
+ * [PILL_OUTPUT_WIDE_SIZE] for the Material ones.
  */
 private val PILL_OUTPUT_SIZE = 23.dp
 private val PILL_PARTY_SIZE = 22.dp
@@ -1296,9 +1296,6 @@ private val PILL_OUTPUT_WIDE_SIZE = 21.dp
  * 22dp on its own in the bottom row.
  */
 private val PILL_OUTPUT_AIRPLAY_SIZE = 19.5.dp
-
-/** Watch is drawn the full height of its box. */
-private val PILL_OUTPUT_TALL_SIZE = 17.dp
 
 /**
  * The earphones are half again as wide as they are tall, so at 23dp the width
@@ -1427,17 +1424,15 @@ private fun OutputPartyPill(
  * Apple Music's AirPlay button does — the phone, buds, a speaker — rather than
  * headphones whatever is actually playing it.
  *
- * Off-device first: while casting or on the watch, the phone's own route is
- * not where anybody is listening.
+ * Off-device first: while casting, the phone's own route is not where anybody
+ * is listening.
  */
 @Composable
 private fun rememberOutputGlyph(): OutputGlyph {
     val cast by PlayerPlatform.host.castState.collectAsStateWithLifecycle()
-    val watch by PlayerPlatform.host.watchOutput.collectAsStateWithLifecycle()
     val active = rememberAudioOutputs().firstOrNull { it.isActive }
     return when {
         cast.connectedName != null -> OutputGlyph(Icons.Rounded.CastConnected, PILL_OUTPUT_WIDE_SIZE)
-        watch.active -> OutputGlyph(Icons.Rounded.Watch, PILL_OUTPUT_TALL_SIZE)
         else -> when (active?.kind) {
             // No active row is the phone too — the caption under the pill
             // says "This phone" in the same case. AirPlay rather than a phone:
