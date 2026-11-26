@@ -90,7 +90,7 @@ func TestOpenAIRecommendRoundTrip(t *testing.T) {
 			"choices": []map[string]any{
 				{
 					"message": map[string]string{
-						"content": `{"queries":["Lauv - I Like Me Better"],"artists":["Lauv"]}`,
+						"content": `{"queries":["Lauv - I Like Me Better"],"artists":["Lauv"],"subgenres":["indie pop"],"tasteSummary":"Smooth melodic indie pop around 95 BPM"}`,
 					},
 				},
 			},
@@ -103,13 +103,15 @@ func TestOpenAIRecommendRoundTrip(t *testing.T) {
 		OpenAIBaseURL: srv.URL,
 	})
 	resp, err := rec.Recommend(context.Background(), RecommendRequest{
-		Mode:         "new-release",
-		LikedArtists: []string{"John Michael Howell"},
+		Mode:                 "new-release",
+		LikedArtists:         []string{"John Michael Howell"},
+		PriorPersona:         "Melodic pop-soul",
+		LikedRecommendations: []TrackHint{{Title: "The Wind", Artist: "John Michael Howell"}},
 	})
 	if err != nil {
 		t.Fatalf("recommend error: %v", err)
 	}
-	if !resp.Enabled || resp.Provider != "openai" || resp.Queries[0] != "Lauv - I Like Me Better" {
+	if !resp.Enabled || resp.Provider != "openai" || resp.Queries[0] != "Lauv - I Like Me Better" || resp.TasteSummary == "" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }

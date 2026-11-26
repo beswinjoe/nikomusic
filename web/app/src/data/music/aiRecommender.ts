@@ -37,6 +37,8 @@ interface DiscoveryCacheEntry {
   tracks: Track[];
   recommendedIds: string[];
   avoidKeywords: string[];
+  tasteSummary?: string;
+  subgenres?: string[];
 }
 
 interface BackendAIResponse {
@@ -44,7 +46,9 @@ interface BackendAIResponse {
   provider?: string;
   queries: string[];
   artists: string[];
+  subgenres?: string[];
   avoidKeywords?: string[];
+  tasteSummary?: string;
 }
 
 const EMPTY_TRACKS: Track[] = [];
@@ -266,13 +270,49 @@ export function summarizeTasteForAI(
   };
 }
 
+/**
+ * Evaluates which previously AI-recommended tracks the listener ended up loving vs skipping
+ * so the backend OpenAI model learns iteratively across sessions.
+ */
+export function buildFeedbackSignals(
+  profile: TasteProfileData,
+  priorTracks: readonly Track[],
+): {
+  likedRecommendations: { title: string; artist: string }[];
+  skippedRecommendations: { title: string; artist: string }[];
+} {
+  const likedRecommendations: { title: string; artist: string }[] = [];
+  const skippedRecommendations: { title: string; artist: string }[] = [];
+  const likedSet = new Set(profile.likedIds);
+
+  for (const t of priorTracks) {
+    const sig = profile.tracks[t.videoId];
+    const liked = likedSet.has(t.videoId) || sig?.liked === true;
+    const completed = (sig?.completions ?? 0) > 0;
+    const earlySkipped = (sig?.earlySkips ?? 0) >= 1 && !completed && !liked;
+    const artist = artistLine(t);
+    if ((liked || completed) && likedRecommendations.length < 8) {
+      likedRecommendations.push({ title: t.title, artist });
+    } else if (earlySkipped && skippedRecommendations.length < 8) {
+      skippedRecommendations.push({ title: t.title, artist });
+    }
+  }
+  return { likedRecommendations, skippedRecommendations };
+}
+
 async function fetchBackendAISeeds(params: {
   mode: RankingMode;
   mood?: MoodDefinition | null;
   summary: ReturnType<typeof summarizeTasteForAI>;
+  priorCache: DiscoveryCacheEntry | null;
+  profile: TasteProfileData;
 }): Promise<BackendAIResponse | null> {
   const base = config.partyServerUrl.trim().replace(/\/+$/, '');
   if (!base) return null;
+
+  const feedback = params.priorCache?.tracks.length
+    ? buildFeedbackSignals(params.profile, params.priorCache.tracks)
+    : { likedRecommendations: [], skippedRecommendations: [] };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), BACKEND_TIMEOUT_MS);
@@ -288,6 +328,9 @@ async function fetchBackendAISeeds(params: {
         topTracks: params.summary.topTracks.map((t) => ({ title: t.title, artist: t.artist })),
         likedArtists: params.summary.likedArtists,
         skippedArtists: params.summary.skippedArtists,
+        likedRecommendations: feedback.likedRecommendations,
+        skippedRecommendations: feedback.skippedRecommendations,
+        priorPersona: params.priorCache?.tasteSummary ?? '',
         preferredScripts: params.summary.signature.preferredScripts,
         audio:
           params.summary.signature.avgBpm !== null
@@ -307,7 +350,9 @@ async function fetchBackendAISeeds(params: {
       provider: data.provider,
       queries: Array.isArray(data.queries) ? data.queries : [],
       artists: Array.isArray(data.artists) ? data.artists : [],
+      subgenres: Array.isArray(data.subgenres) ? data.subgenres : [],
       avoidKeywords: Array.isArray(data.avoidKeywords) ? data.avoidKeywords : [],
+      tasteSummary: typeof data.tasteSummary === 'string' ? data.tasteSummary : undefined,
     };
   } catch {
     return null;
@@ -466,7 +511,13 @@ export async function warmBackgroundTasteAI(
   inFlightKey = cacheKey;
   inFlightPromise = (async () => {
     try {
-      const backendSeeds = await fetchBackendAISeeds({ mode, mood, summary });
+      const backendSeeds = await fetchBackendAISeeds({
+        mode,
+        mood,
+        summary,
+        priorCache: existing,
+        profile,
+      });
       const avoidSet = new Set(summary.signature.avoidedArtists ?? []);
       const discovered = await expandLocalTasteGraph(summary, backendSeeds, avoidSet);
       if (!discovered.length) return getCachedTasteDiscoveries();
@@ -488,7 +539,9 @@ export async function warmBackgroundTasteAI(
           updatedAt: Date.now(),
           tracks: ranked,
           recommendedIds: ranked.map((t) => t.videoId),
-          avoidKeywords: backendSeeds?.avoidKeywords ?? [],
+          avoidKeywords: backendSeeds?.avoidKeywords ?? existing?.avoidKeywords ?? [],
+          tasteSummary: backendSeeds?.tasteSummary || existing?.tasteSummary,
+          subgenres: backendSeeds?.subgenres?.length ? backendSeeds.subgenres : existing?.subgenres,
         });
       }
       return ranked;

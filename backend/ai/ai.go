@@ -33,13 +33,16 @@ type AudioSignature struct {
 
 // RecommendRequest carries a compact listener taste summary (never raw UI prompts).
 type RecommendRequest struct {
-	Mode             string          `json:"mode"`
-	Mood             string          `json:"mood,omitempty"`
-	TopTracks        []TrackHint     `json:"topTracks,omitempty"`
-	LikedArtists     []string        `json:"likedArtists,omitempty"`
-	SkippedArtists   []string        `json:"skippedArtists,omitempty"`
-	PreferredScripts []string        `json:"preferredScripts,omitempty"`
-	Audio            *AudioSignature `json:"audio,omitempty"`
+	Mode                   string          `json:"mode"`
+	Mood                   string          `json:"mood,omitempty"`
+	TopTracks              []TrackHint     `json:"topTracks,omitempty"`
+	LikedArtists           []string        `json:"likedArtists,omitempty"`
+	SkippedArtists         []string        `json:"skippedArtists,omitempty"`
+	LikedRecommendations   []TrackHint     `json:"likedRecommendations,omitempty"`
+	SkippedRecommendations []TrackHint     `json:"skippedRecommendations,omitempty"`
+	PriorPersona           string          `json:"priorPersona,omitempty"`
+	PreferredScripts       []string        `json:"preferredScripts,omitempty"`
+	Audio                  *AudioSignature `json:"audio,omitempty"`
 }
 
 // RecommendResponse contains AI-curated discovery queries executed quietly in the background.
@@ -48,7 +51,9 @@ type RecommendResponse struct {
 	Provider      string   `json:"provider,omitempty"`
 	Queries       []string `json:"queries"`
 	Artists       []string `json:"artists"`
+	Subgenres     []string `json:"subgenres,omitempty"`
 	AvoidKeywords []string `json:"avoidKeywords,omitempty"`
+	TasteSummary  string   `json:"tasteSummary,omitempty"`
 }
 
 // Config configures the server-only AI provider (from server env vars only).
@@ -265,6 +270,9 @@ func BuildPrompt(req RecommendRequest) string {
 	if req.Mood != "" {
 		fmt.Fprintf(&b, "Current mood target: %s\n", req.Mood)
 	}
+	if req.PriorPersona != "" {
+		fmt.Fprintf(&b, "Prior learned taste summary (refine from new feedback): %s\n", req.PriorPersona)
+	}
 	if len(req.TopTracks) > 0 {
 		b.WriteString("Listener favourite/completed tracks:\n")
 		for _, t := range req.TopTracks {
@@ -277,6 +285,18 @@ func BuildPrompt(req RecommendRequest) string {
 	}
 	if len(req.LikedArtists) > 0 {
 		fmt.Fprintf(&b, "Top liked artists: %s\n", strings.Join(req.LikedArtists, ", "))
+	}
+	if len(req.LikedRecommendations) > 0 {
+		b.WriteString("Previous recommendations the listener LOVED/completed (do more like these):\n")
+		for _, t := range req.LikedRecommendations {
+			fmt.Fprintf(&b, "- %s — %s\n", t.Title, t.Artist)
+		}
+	}
+	if len(req.SkippedRecommendations) > 0 {
+		b.WriteString("Previous recommendations the listener SKIPPED early (steer away from these styles):\n")
+		for _, t := range req.SkippedRecommendations {
+			fmt.Fprintf(&b, "- %s — %s\n", t.Title, t.Artist)
+		}
 	}
 	if len(req.SkippedArtists) > 0 {
 		fmt.Fprintf(&b, "Artists recently skipped early (avoid): %s\n", strings.Join(req.SkippedArtists, ", "))
@@ -295,8 +315,9 @@ func BuildPrompt(req RecommendRequest) string {
 	b.WriteString("1. Never include fan reuploads, lyric channels (like 7clouds), slowed+reverb, or sped-up remixes.\n")
 	b.WriteString("2. Queries should be clean official artist/track pairs like \"Artist Song Title\" suitable for searching YouTube Music Songs.\n")
 	b.WriteString("3. Do not repeat tracks already listed in favourite tracks above; pick adjacent/new releases or deep-cut gems matching the same sonic feel.\n")
-	b.WriteString("4. Return JSON ONLY with keys:\n")
-	b.WriteString(`   {"queries": [8 to 10 "Artist - Track" strings], "artists": [6 to 8 recommended artist names], "avoidKeywords": [optional up to 6 mismatched subgenres]}`)
+	b.WriteString("4. Update \"tasteSummary\" cleanly in <= 180 chars reflecting what this listener responds to.\n")
+	b.WriteString("5. Return JSON ONLY with keys:\n")
+	b.WriteString(`   {"queries": [8 to 10 "Artist - Track" strings], "artists": [6 to 8 recommended artist names], "subgenres": [3 to 5 concise subgenres], "avoidKeywords": [optional up to 6 mismatched subgenres], "tasteSummary": "<concise evolved taste persona>"}`)
 	return b.String()
 }
 
@@ -321,7 +342,9 @@ func ParseRecommendationJSON(raw string) (RecommendResponse, error) {
 	var parsed struct {
 		Queries       []string `json:"queries"`
 		Artists       []string `json:"artists"`
+		Subgenres     []string `json:"subgenres"`
 		AvoidKeywords []string `json:"avoidKeywords"`
+		TasteSummary  string   `json:"tasteSummary"`
 	}
 	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
 		return RecommendResponse{}, err
@@ -329,28 +352,39 @@ func ParseRecommendationJSON(raw string) (RecommendResponse, error) {
 	return RecommendResponse{
 		Queries:       cleanList(parsed.Queries, 10, 96),
 		Artists:       cleanList(parsed.Artists, 8, 64),
+		Subgenres:     cleanList(parsed.Subgenres, 6, 48),
 		AvoidKeywords: cleanList(parsed.AvoidKeywords, 6, 48),
+		TasteSummary:  clampText(parsed.TasteSummary, 200),
 	}, nil
 }
 
-func sanitizeRequest(req RecommendRequest) RecommendRequest {
-	out := RecommendRequest{
-		Mode:             clampText(req.Mode, 24),
-		Mood:             clampText(req.Mood, 40),
-		LikedArtists:     cleanList(req.LikedArtists, 10, 64),
-		SkippedArtists:   cleanList(req.SkippedArtists, 10, 64),
-		PreferredScripts: cleanList(req.PreferredScripts, 5, 24),
-	}
-	for _, t := range req.TopTracks {
+func sanitizeHints(items []TrackHint, limit int) []TrackHint {
+	out := make([]TrackHint, 0, min(limit, len(items)))
+	for _, t := range items {
 		title := clampText(t.Title, 80)
 		artist := clampText(t.Artist, 64)
 		if title == "" {
 			continue
 		}
-		out.TopTracks = append(out.TopTracks, TrackHint{Title: title, Artist: artist})
-		if len(out.TopTracks) >= 12 {
+		out = append(out, TrackHint{Title: title, Artist: artist})
+		if len(out) >= limit {
 			break
 		}
+	}
+	return out
+}
+
+func sanitizeRequest(req RecommendRequest) RecommendRequest {
+	out := RecommendRequest{
+		Mode:                   clampText(req.Mode, 24),
+		Mood:                   clampText(req.Mood, 40),
+		PriorPersona:           clampText(req.PriorPersona, 220),
+		TopTracks:              sanitizeHints(req.TopTracks, 12),
+		LikedRecommendations:   sanitizeHints(req.LikedRecommendations, 8),
+		SkippedRecommendations: sanitizeHints(req.SkippedRecommendations, 8),
+		LikedArtists:           cleanList(req.LikedArtists, 10, 64),
+		SkippedArtists:         cleanList(req.SkippedArtists, 10, 64),
+		PreferredScripts:       cleanList(req.PreferredScripts, 5, 24),
 	}
 	if req.Audio != nil && req.Audio.AvgBPM >= 40 && req.Audio.AvgBPM <= 240 {
 		sig := &AudioSignature{

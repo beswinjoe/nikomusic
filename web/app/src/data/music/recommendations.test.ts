@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { BrowsePage, MusicItem, Shelf, Track } from './types';
 import type { TrackAnalysis } from '../../playback/automix/analysis/types';
-import { detectScripts, summarizeTasteForAI } from './aiRecommender';
+import { buildFeedbackSignals, detectScripts, summarizeTasteForAI } from './aiRecommender';
 import {
   ALL_MOODS,
   CORE_MOODS,
@@ -325,5 +325,15 @@ describe('Mood Discovery & Recommendation Engine (Web)', () => {
 
     expect(ranked[0]!.videoId).toBe('match');
     expect(ranked.at(-1)!.videoId).toBe('skipped-artist');
+
+    // Verify iterative feedback signal extraction for backend AI training loop
+    setTrackLiked('match', true, { title: 'Velvet Rain', artist: 'New Soul Artist' }, now);
+    recordTrackSkip({ videoId: 'mismatch', title: 'Hyper EDM Track', artist: 'Random DJ', playedSec: 4, durationSec: 200 }, now);
+    const fb = buildFeedbackSignals(getTasteProfile(), [
+      track('match', 'Velvet Rain', 'New Soul Artist'),
+      track('mismatch', 'Hyper EDM Track', 'Random DJ'),
+    ]);
+    expect(fb.likedRecommendations.map((x) => x.title)).toEqual(['Velvet Rain']);
+    expect(fb.skippedRecommendations.map((x) => x.title)).toEqual(['Hyper EDM Track']);
   });
 });

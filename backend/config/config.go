@@ -1,12 +1,45 @@
 package config
 
 import (
+	"bufio"
 	"log"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 )
+
+// loadDotEnv reads local gitignored .env files into process env (never overwriting set vars).
+func loadDotEnv(paths ...string) bool {
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			line = strings.TrimPrefix(line, "export ")
+			idx := strings.IndexByte(line, '=')
+			if idx <= 0 {
+				continue
+			}
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			val = strings.Trim(val, `"'`)
+			if key != "" && os.Getenv(key) == "" {
+				_ = os.Setenv(key, val)
+			}
+		}
+		_ = f.Close()
+	}
+	return true
+}
+
+var _ = loadDotEnv(".env.local", ".env")
 
 func getInt(key string, fallback int) int {
 	val := os.Getenv(key)
