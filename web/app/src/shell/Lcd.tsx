@@ -3,7 +3,6 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { LogoMark } from '@/components/icons/LogoMark';
 import { ExplicitBadge } from '@/components/music/ExplicitBadge';
-import { VideoSurface } from '@/components/music/VideoSurface';
 import { albumHref, artistHref } from '@/components/music/links';
 import { PrefetchLink } from '@/components/PrefetchLink';
 import { artistCredits, creditSegments } from '@/lib/artistCredits';
@@ -11,7 +10,6 @@ import { sizedArtwork } from '@/lib/artwork';
 import type { Track } from '@/data/music/types';
 import { usePlayer } from '@/state/player';
 import { useUi } from '@/state/ui';
-import { useHasVideo } from '@/state/video';
 import { albumPageFor, artistPageFor } from './nowPlayingLinks';
 import { MixWindowHighlight } from './NerdStats';
 import { useScrubber } from './useScrubber';
@@ -103,7 +101,6 @@ export function Lcd() {
     const entry = s.queue[s.index]?.track;
     return entry && entry.videoId === s.nowPlaying?.videoId ? entry : null;
   });
-  const video = useHasVideo(nowPlaying?.videoId);
 
   if (!nowPlaying) {
     return (
@@ -116,13 +113,10 @@ export function Lcd() {
   const { videoId, title, artist } = nowPlaying;
   const album = track?.album ?? null;
   return (
-    <div
-      className={`group/lcd relative grid h-full items-center gap-x-2 pb-1.5 ${video ? 'grid-cols-[60px_minmax(0,1fr)]' : 'grid-cols-[34px_minmax(0,1fr)]'}`}
-    >
+    <div className="group/lcd relative grid h-full grid-cols-[34px_minmax(0,1fr)] items-center gap-x-2 pb-1.5">
       {/* As Apple's: the artwork opens the full-screen player, with an expand glyph on hover. */}
       <button
-        // A music video plays here in small, at 16:9.
-        className={`group/art relative block h-[34px] overflow-hidden rounded-[6px] bg-joe p-0 transition-[filter,opacity] ${video ? 'w-[60px] bg-black' : 'w-[34px]'}`}
+        className="group/art relative block h-[34px] w-[34px] overflow-hidden rounded-[6px] bg-joe p-0 transition-[filter,opacity,width] duration-300"
         aria-label="Open full screen player"
         onClick={() => openFullScreen(true)}
       >
@@ -137,9 +131,6 @@ export function Lcd() {
             onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
           />
         )}
-        <VideoSurface
-          className={`absolute inset-0 transition-opacity duration-300 ${video ? 'opacity-100' : 'opacity-0'}`}
-        />
         {/* Hovering anywhere on the player pill dims the artwork and shows the expand glyph. */}
         <span
           className="absolute inset-0 grid place-items-center bg-[rgb(0_0_0/0.5)] text-white opacity-0 transition-opacity duration-200 group-hover/pill:opacity-100 group-focus-visible/art:opacity-100"
@@ -203,7 +194,7 @@ function Progress() {
         aria-hidden="true"
       >
         <MixWindowHighlight />
-        <div ref={bar} className="relative size-full origin-left scale-x-(--progress) bg-key transition-colors duration-100 group-hover/scrub:bg-key-rollover group-data-dragging/scrub:bg-key-rollover [--progress:0]" />
+        <div ref={bar} className="relative size-full origin-left scale-x-(--progress) bg-primary/90 transition-colors duration-100 group-hover/scrub:bg-primary group-data-dragging/scrub:bg-primary [--progress:0]" />
       </div>
     </div>
   );

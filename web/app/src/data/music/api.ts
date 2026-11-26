@@ -91,6 +91,29 @@ export async function searchSongs(query: string): Promise<Track[]> {
   return mapPlaylistTracks((shelf as { contents?: readonly unknown[] } | undefined)?.contents ?? []);
 }
 
+/** YouTube Music's Videos shelf for [query], used when resolving official music video cuts. */
+export async function searchVideos(query: string): Promise<MusicItem[]> {
+  const yt = await getMusicClient();
+  const search = await yt.music.search(query, { type: 'video' });
+  const shelf = search.videos ?? search.contents?.find((c) => c.type === 'MusicShelf');
+  const contents = (shelf as { contents?: readonly unknown[] } | undefined)?.contents ?? [];
+  const tracks = mapPlaylistTracks(contents);
+  const items: MusicItem[] = tracks.map((mapped) => ({
+    kind: 'video',
+    id: mapped.videoId,
+    title: mapped.title,
+    subtitle: mapped.artists.map((a) => a.name).join(', '),
+    artists: mapped.artists,
+    album: mapped.album,
+    thumbnail: mapped.thumbnail,
+    wide: true,
+    durationSec: mapped.durationSec,
+    explicit: mapped.explicit,
+  }));
+  if (items.length) return items;
+  return (await fetchSearch(query)).videos;
+}
+
 export async function fetchSuggestions(input: string): Promise<Suggestions> {
   const yt = await getInnertube();
   return mapSuggestions(await yt.music.getSearchSuggestions(input));
@@ -98,7 +121,47 @@ export async function fetchSuggestions(input: string): Promise<Suggestions> {
 
 export async function fetchAlbum(id: string): Promise<AlbumPage> {
   const yt = await getMusicClient();
-  return mapAlbum(id, await yt.music.getAlbum(id));
+  const resolvedId = id.startsWith('MPLA') ? id.slice(4) : id;
+
+  // Playlist-backed releases (OLAK5uy_ / VL) can occasionally land as album links.
+  if (resolvedId.startsWith('OLAK') || resolvedId.startsWith('VL')) {
+    const pl = await yt.music.getPlaylist(resolvedId);
+    const header = pl.header as unknown as Record<string, unknown> | undefined;
+    const mapped = mapPlaylist(resolvedId, pl);
+    return {
+      ...mapped,
+      playlistId: resolvedId.replace(/^VL/, ''),
+      more: mapShelves((pl as unknown as { page?: { contents_memo?: { getType?: (t: unknown) => unknown[] } } }) ? [] : []),
+      ...(header ? {} : {}),
+    };
+  }
+
+  try {
+    return mapAlbum(resolvedId, await yt.music.getAlbum(resolvedId));
+  } catch (primaryErr) {
+    // Fallback for YouTube.js Album.js crashes (`MusicShelf` missing when `MusicPlaylistShelf` is used,
+    // or privately owned / library-wrapped album releases).
+    try {
+      const signed = await getSignedInnertube().catch(() => yt);
+      const { YTNodes } = await import('youtubei.js/web');
+      const response = await signed.actions.execute('/browse', { browseId: resolvedId, client: 'YTMUSIC', parse: true });
+      const memo = response.contents_memo;
+      const header = memo?.getType(YTNodes.MusicResponsiveHeader, YTNodes.MusicDetailHeader)?.[0];
+      const contents =
+        memo?.getType(YTNodes.MusicShelf)?.[0]?.contents ??
+        memo?.getType(YTNodes.MusicPlaylistShelf)?.[0]?.contents ??
+        [];
+      const sections = memo?.getType(YTNodes.MusicCarouselShelf) ?? [];
+      return mapAlbum(resolvedId, {
+        header,
+        contents,
+        sections,
+        url: undefined,
+      } as unknown as Parameters<typeof mapAlbum>[1]);
+    } catch {
+      throw primaryErr;
+    }
+  }
 }
 
 /** How many top songs an artist page lists, as on the phone. */
@@ -191,6 +254,15 @@ export async function fetchLibrary(section: LibrarySection): Promise<Paged<Brows
   const lists = [...(memo?.getType(YTNodes.MusicShelf) ?? []), ...(memo?.getType(YTNodes.MusicPlaylistShelf) ?? [])];
   const carousels = memo?.getType(YTNodes.MusicCarouselShelf) ?? [];
   const page = mapBrowse({ sections: [...grids, ...lists, ...carousels] }, title);
+  // Fallback: if memo held TwoRowItems/ResponsiveItems outside Grid/MusicShelf wrappers (e.g. album grids), extract them directly.
+  if (!page.grid.length && !page.tracks.length && !page.shelves.length && memo) {
+    const looseNodes = [
+      ...(memo.getType(YTNodes.MusicTwoRowItem) ?? []),
+      ...(memo.getType(YTNodes.MusicResponsiveListItem) ?? []),
+    ];
+    const loose = mapBrowse({ sections: [{ type: 'Grid', items: looseNodes }] }, title);
+    page.grid = loose.grid;
+  }
   // History is several lists ("Today", "Yesterday"); the rest is one grid or one list.
   const token = (grids[0]?.continuation ?? (lists.length === 1 ? lists[0]?.continuation : null)) || null;
   return { data: { ...page, title }, next: token ? () => orEnd(() => libraryContinuation(token, title), emptyPage(title)) : null };
@@ -275,16 +347,23 @@ export async function addToPlaylist(playlistId: string, videoId: string): Promis
   });
 }
 
+export type PlaylistPrivacy = 'PRIVATE' | 'PUBLIC' | 'UNLISTED';
+
 /**
- * A new private playlist holding [videoIds], as YtMusicRepository.createPlaylist
+ * A new playlist holding [videoIds], as YtMusicRepository.createPlaylist
  * makes one (InnerTube `playlist/create`). Returns its id, without the VL.
  */
-export async function createPlaylist(title: string, videoIds: string[], description = ''): Promise<string> {
+export async function createPlaylist(
+  title: string,
+  videoIds: string[],
+  description = '',
+  privacyStatus: PlaylistPrivacy = 'PRIVATE',
+): Promise<string> {
   const yt = await getSignedInnertube();
   const response = await yt.actions.execute('/playlist/create', {
     title,
     description,
-    privacyStatus: 'PRIVATE',
+    privacyStatus,
     videoIds,
     client: 'YTMUSIC',
   });
@@ -300,10 +379,73 @@ export async function createPlaylist(title: string, videoIds: string[], descript
  * endpoint with its type, ATV for the song and OMV/UGC for videos. (A radio
  * seeded on a video id is all videos; one seeded on a song is mostly songs.)
  */
-function isMusicVideo(item: YTNodes.PlaylistPanelVideo): boolean {
-  const type = (item.endpoint?.payload as { watchEndpointMusicSupportedConfigs?: { watchEndpointMusicConfig?: { musicVideoType?: string } } } | undefined)
+function musicVideoTypeOf(item: YTNodes.PlaylistPanelVideo): string | undefined {
+  return (item.endpoint?.payload as { watchEndpointMusicSupportedConfigs?: { watchEndpointMusicConfig?: { musicVideoType?: string } } } | undefined)
     ?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
+}
+
+function isMusicVideo(item: YTNodes.PlaylistPanelVideo): boolean {
+  const type = musicVideoTypeOf(item);
   return type !== undefined ? type !== 'MUSIC_VIDEO_TYPE_ATV' : !item.album;
+}
+
+const NON_ORIGINAL_CHANNEL_OR_TITLE =
+  /\b(?:7clouds|shadow\s*music|koala\s*kontrol|taz\s*network|vibe\s*music|syrebralvibes|uniq\s*vibes|aura\s*melodic|chill\s*only|cloudkid|xefox|nightblue|wave\s*music|latin\s*hype|rap\s*city|trap\s*nation|bass\s*nation|lyrics?\s*hub|polar\s*records)\b/i;
+const FAN_UPLOAD_KEYWORDS = /\b(?:lyric(?:s|al)?\s*video|lyrics\s+video|fan\s*made|sped\s*up|slowed(?:\s*\+\s*reverb)?|nightcore|8d\s*audio|karaoke|tribute)\b/i;
+
+export function isThirdPartyUpload(track: Pick<Track, 'title' | 'artists'>): boolean {
+  const names = track.artists.map((a) => a.name).join(' ');
+  return NON_ORIGINAL_CHANNEL_OR_TITLE.test(names) || NON_ORIGINAL_CHANNEL_OR_TITLE.test(track.title) || FAN_UPLOAD_KEYWORDS.test(track.title);
+}
+
+/**
+ * Returns true when a video cut is an authentic, official original video (OMV / official artist channel)
+ * rather than a third-party fan re-upload (e.g. 7clouds, lyric video channels, UGC edits).
+ */
+export function isOriginalOfficialVideoCandidate({
+  title,
+  artists,
+  musicVideoType,
+  expectedArtistIds = [],
+  uploaderChannelIds = [],
+}: {
+  title: string;
+  artists: string;
+  musicVideoType?: string;
+  expectedArtistIds?: readonly (string | null | undefined)[];
+  uploaderChannelIds?: readonly (string | null | undefined)[];
+}): boolean {
+  if (musicVideoType === 'MUSIC_VIDEO_TYPE_ATV') return false;
+  if (NON_ORIGINAL_CHANNEL_OR_TITLE.test(artists) || NON_ORIGINAL_CHANNEL_OR_TITLE.test(title)) {
+    return false;
+  }
+  if (musicVideoType === 'MUSIC_VIDEO_TYPE_OMV') return true;
+  const knownArtistIds = new Set(expectedArtistIds.filter((id): id is string => !!id));
+  const channelMatchesArtist = uploaderChannelIds.some((id) => !!id && knownArtistIds.has(id));
+  if (musicVideoType === 'MUSIC_VIDEO_TYPE_UGC') {
+    return channelMatchesArtist && !FAN_UPLOAD_KEYWORDS.test(title);
+  }
+  if (FAN_UPLOAD_KEYWORDS.test(title)) return false;
+  return true;
+}
+
+/** Extracts real `{ title, artist }` hints when a third-party YouTube upload puts `"Artist - Song"` in title and `"7clouds..."` as artist. */
+export function cleanSongSearchTerms(title: string, artist: string): { title: string; artist: string } {
+  const normalizedArtist = artist.replace(/\s*-\s*Topic$/i, '').trim();
+  const cleanChannel = NON_ORIGINAL_CHANNEL_OR_TITLE.test(normalizedArtist) ? '' : normalizedArtist;
+  const split = title.split(/\s[-–—]\s/);
+  if (split.length >= 2 && !cleanChannel && split[0]!.trim() && split[1]!.trim()) {
+    return {
+      artist: split[0]!.replace(/\s*-\s*Topic$/i, '').trim(),
+      title: split.slice(1).join(' - ').replace(/\s*[([]\s*(?:lyric(?:s|al)?(?:\s*video)?|official(?:\s*(?:music|lyric))?\s*(?:video|audio)|visualizer|m\/?v|audio|video|hd|4k)[^)\]]*[)\]]/gi, '').trim(),
+    };
+  }
+  return {
+    title: title
+      .replace(/\s*[([]\s*(?:lyric(?:s|al)?\s*video|lyrics|official\s*(?:lyric\s*)?video|visualizer|m\/?v|hd|4k)[^)\]]*[)\]]/gi, '')
+      .trim() || title.trim(),
+    artist: cleanChannel,
+  };
 }
 
 /** A station, and which cut it was seeded on: a music video's station is built from music videos. */
@@ -328,8 +470,12 @@ export async function fetchRadio(videoId: string): Promise<Radio> {
   const rows = panel.contents as unknown as Raw[];
   const seedCut = rows.flatMap(panelCuts).find((cut) => cut.video_id === videoId);
   const seedIsVideo = seedCut ? isMusicVideo(seedCut) : false;
+  const candidates = rows
+    .map((raw) => panelCandidate(raw, seedIsVideo))
+    .filter((c): c is Candidate => c !== null)
+    .filter((c) => !isThirdPartyUpload(c.track));
   return {
-    candidates: rows.map((raw) => panelCandidate(raw, seedIsVideo)).filter((c): c is Candidate => c !== null),
+    candidates,
     seedIsVideo,
   };
 }
@@ -391,4 +537,256 @@ export async function findArtistPageId(name: string): Promise<string | null> {
   if (!normalizedArtistName(name)) return null;
   const results = await fetchSearch(name);
   return [...results.top, ...results.artists].find((item) => item.kind === 'artist' && isExactArtistMatch(item.title, name))?.id ?? null;
+}
+
+const versionPairCache = new Map<string, Track | null>();
+const videoCutFlagCache = new Map<string, boolean>();
+const originalVideoCutCache = new Map<string, boolean>();
+const pendingVideoAvailability = new Map<string, Promise<boolean>>();
+
+export function isKnownVideoCut(videoId: string): boolean {
+  return videoCutFlagCache.get(videoId) === true;
+}
+
+/** Returns the paired catalogue audio track for a Video Mode cut, if resolved earlier. */
+export function pairedAudioTrack(videoId: string): Track | null {
+  return versionPairCache.get(`${videoId}:audio`) ?? null;
+}
+
+export function getCachedOriginalVideoSupport(videoId: string): boolean | undefined {
+  if (versionPairCache.has(`${videoId}:video`)) {
+    return versionPairCache.get(`${videoId}:video`) !== null;
+  }
+  if (versionPairCache.get(`${videoId}:audio`)) {
+    return true;
+  }
+  return originalVideoCutCache.get(videoId);
+}
+
+/**
+ * Checks whether [track] has a genuine original Music Video (without using generic video search).
+ * Deduplicates concurrent lookups and caches the answer per track.
+ */
+export async function hasOriginalMusicVideo(track: Track): Promise<boolean> {
+  const cached = getCachedOriginalVideoSupport(track.videoId);
+  if (cached !== undefined) return cached;
+
+  const existing = pendingVideoAvailability.get(track.videoId);
+  if (existing) return existing;
+
+  const job = (async () => {
+    const video = await resolveTrackModeVersion(track, 'video').catch(() => null);
+    if (video) return true;
+    return originalVideoCutCache.get(track.videoId) === true;
+  })().finally(() => {
+    pendingVideoAvailability.delete(track.videoId);
+  });
+
+  pendingVideoAvailability.set(track.videoId, job);
+  return job;
+}
+
+function normMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+    .replace(/\b(official|music video|video|lyric video|audio|lyrics|hd|4k|visualizer|mv)\b/g, ' ')
+    .replace(/[^a-z0-9\u00c0-\u024f\u0900-\u0d7f]+/g, ' ')
+    .trim();
+}
+
+function matchTokens(value: string): string[] {
+  return normMatchText(value).split(' ').filter(Boolean);
+}
+
+function titlesTokenMatch(candidateTitle: string, targetTitle: string): boolean {
+  const cTitle = normMatchText(candidateTitle);
+  const tTitle = normMatchText(targetTitle);
+  if (!cTitle || !tTitle) return false;
+  if (cTitle === tTitle) return true;
+  const cTokens = matchTokens(candidateTitle);
+  const tTokens = matchTokens(targetTitle);
+  if (!cTokens.length || !tTokens.length) return false;
+  if (tTokens.length === 1 && tTokens[0]!.length <= 4) {
+    return cTokens[0] === tTokens[0] && cTokens.length <= 3;
+  }
+  const cSet = new Set(cTokens);
+  return tTokens.every((t) => cSet.has(t)) && cTokens.length <= tTokens.length + 3;
+}
+
+function scoreCutMatch(
+  candidateTitle: string,
+  candidateArtists: string,
+  targetTitle: string,
+  targetArtists: string,
+  candidateDurationSec?: number | null,
+  targetDurationSec?: number | null,
+): number {
+  const cTitle = normMatchText(candidateTitle);
+  const tTitle = normMatchText(targetTitle);
+  if (!cTitle || !tTitle) return 0;
+  let score = cTitle === tTitle ? 4 : titlesTokenMatch(candidateTitle, targetTitle) ? 2 : 0;
+  if (!score) return 0;
+  const cArt = normMatchText(candidateArtists);
+  const tArt = normMatchText(targetArtists);
+  if (cArt && tArt && (cArt.includes(tArt) || tArt.includes(cArt))) score += 3;
+  if (candidateDurationSec && targetDurationSec && candidateDurationSec > 0 && targetDurationSec > 0) {
+    const diff = Math.abs(candidateDurationSec - targetDurationSec);
+    if (diff <= 4) score += 4;
+    else if (diff <= 10) score += 2;
+    else if (diff > 20) score -= 4;
+  }
+  return score;
+}
+
+/**
+ * Resolves the paired official original Music Video (`target = 'video'`) or Catalogue Song (`target = 'audio'`)
+ * version of [track] using YouTube Music's watch-queue wrapper.
+ * For Video Mode (`target = 'video'`), never falls back to third-party YouTube video search (such as 7clouds
+ * or fan lyric uploads); returns null when no authentic original Music Video is paired.
+ */
+export async function resolveTrackModeVersion(track: Track, target: 'video' | 'audio'): Promise<Track | null> {
+  const cacheKey = `${track.videoId}:${target}`;
+  if (versionPairCache.has(cacheKey)) {
+    return versionPairCache.get(cacheKey) ?? null;
+  }
+
+  const yt = await getMusicClient();
+  try {
+    const panel = await yt.music.getUpNext(track.videoId, false);
+    const rows = panel.contents as unknown as Raw[];
+    const row = rows.find((raw) => panelCuts(raw).some((cut) => cut.video_id === track.videoId));
+    if (row) {
+      const cuts = panelCuts(row);
+      const currentCut = cuts.find((c) => c.video_id === track.videoId);
+      if (currentCut) {
+        const currentIsVid = isMusicVideo(currentCut);
+        videoCutFlagCache.set(track.videoId, currentIsVid);
+        if (currentIsVid) {
+          originalVideoCutCache.set(
+            track.videoId,
+            isOriginalOfficialVideoCandidate({
+              title: currentCut.title?.toString() ?? track.title,
+              artists: (currentCut.artists ?? []).map((a) => a.name).join(', '),
+              musicVideoType: musicVideoTypeOf(currentCut),
+              expectedArtistIds: track.artists.map((a) => a.id),
+              uploaderChannelIds: (currentCut.artists ?? []).map((a) => a.channel_id),
+            }),
+          );
+        } else {
+          originalVideoCutCache.set(
+            track.videoId,
+            cuts.some((c) => {
+              if (c.video_id === track.videoId || !isMusicVideo(c)) return false;
+              return isOriginalOfficialVideoCandidate({
+                title: c.title?.toString() ?? '',
+                artists: (c.artists ?? []).map((a) => a.name).join(', '),
+                musicVideoType: musicVideoTypeOf(c),
+                expectedArtistIds: track.artists.map((a) => a.id),
+                uploaderChannelIds: (c.artists ?? []).map((a) => a.channel_id),
+              });
+            }),
+          );
+        }
+      }
+
+      if (target === 'video') {
+        const videoCut = cuts.find((c) => {
+          if (!isMusicVideo(c)) return false;
+          return isOriginalOfficialVideoCandidate({
+            title: c.title?.toString() ?? '',
+            artists: (c.artists ?? []).map((a) => a.name).join(', '),
+            musicVideoType: musicVideoTypeOf(c),
+            expectedArtistIds: track.artists.map((a) => a.id),
+            uploaderChannelIds: (c.artists ?? []).map((a) => a.channel_id),
+          });
+        });
+        if (videoCut?.video_id) {
+          const thumbs = [...(videoCut.thumbnail ?? [])].sort((a, b) => b.width - a.width);
+          const merged: Track = {
+            videoId: videoCut.video_id,
+            title: videoCut.title?.toString() || track.title,
+            artists: (videoCut.artists ?? []).length
+              ? (videoCut.artists ?? []).map((a) => ({ name: a.name, id: a.channel_id ?? null }))
+              : track.artists,
+            album: track.album,
+            durationSec: videoCut.duration?.seconds || track.durationSec,
+            explicit: (videoCut.badges ?? []).some((b) => /explicit/i.test(JSON.stringify(b))) || track.explicit,
+            thumbnail: thumbs[0]?.url ?? track.thumbnail,
+            index: null,
+            plays: null,
+          };
+          videoCutFlagCache.set(merged.videoId, true);
+          originalVideoCutCache.set(merged.videoId, true);
+          originalVideoCutCache.set(track.videoId, true);
+          versionPairCache.set(cacheKey, merged);
+          versionPairCache.set(`${merged.videoId}:audio`, track);
+          return merged;
+        }
+        // Track has no authentic paired Official Music Video — do NOT fall back to 7clouds / YouTube search
+        originalVideoCutCache.set(track.videoId, false);
+        versionPairCache.set(cacheKey, null);
+        return null;
+      }
+
+      const paired = panelCandidate(row, false);
+      if (paired && !paired.isVideo) {
+        videoCutFlagCache.set(paired.track.videoId, false);
+        const merged: Track = {
+          ...paired.track,
+          title: paired.track.title || track.title,
+          artists: paired.track.artists.length ? paired.track.artists : track.artists,
+          album: paired.track.album ?? track.album,
+        };
+        versionPairCache.set(cacheKey, merged);
+        versionPairCache.set(`${merged.videoId}:video`, track);
+        return merged;
+      }
+    }
+  } catch {
+    if (target === 'video') return null;
+  }
+
+  if (target === 'video') {
+    originalVideoCutCache.set(track.videoId, false);
+    versionPairCache.set(cacheKey, null);
+    return null;
+  }
+
+  const rawLeadArtist = track.artists[0]?.name ?? '';
+  const cleanedTerms = cleanSongSearchTerms(track.title, rawLeadArtist);
+  const query = [cleanedTerms.title, cleanedTerms.artist].filter(Boolean).join(' ').trim();
+  if (!query) {
+    versionPairCache.set(cacheKey, null);
+    return null;
+  }
+
+  try {
+    const songs = await searchSongs(query);
+    let best: { song: Track; score: number } | null = null;
+    for (const song of songs) {
+      if (isThirdPartyUpload(song)) continue;
+      const art = song.artists.map((a) => a.name).join(' ');
+      const s = scoreCutMatch(
+        song.title,
+        art,
+        cleanedTerms.title,
+        cleanedTerms.artist,
+        song.durationSec,
+        track.durationSec,
+      );
+      if (s > 0 && (!best || s > best.score)) best = { song, score: s };
+    }
+    if (best && (cleanedTerms.artist || best.score >= 4)) {
+      videoCutFlagCache.set(best.song.videoId, false);
+      versionPairCache.set(cacheKey, best.song);
+      versionPairCache.set(`${best.song.videoId}:video`, track);
+      return best.song;
+    }
+  } catch {
+    return null;
+  }
+
+  versionPairCache.set(cacheKey, null);
+  return null;
 }

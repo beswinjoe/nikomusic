@@ -44,10 +44,11 @@ export function orderedSources(saved: readonly string[]): LyricsSourceId[] {
 // ---- LyricsQuery.kt -------------------------------------------------------------------
 
 const CREDITS = [
-  /\s*[([]\s*(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi,
+  /\s*[([]\s*(feat|ft|featuring|with|prod|from)\b[^)\]]*[)\]]/gi,
   /\s+(feat|ft|featuring)\.?\s+.*$/gi,
-  /\s*[([]\s*(official\s*)?(music\s*)?(video|audio|visuali[sz]er|lyrics?\s*video|lyrics?|m\/?v|hd|hq|4k|full\s*song)\s*[)\]]/gi,
+  /\s*[([]\s*(official\s*)?(music\s*)?(video|audio|visuali[sz]er|lyrics?\s*video|lyrics?|m\/?v|hd|hq|4k|full\s*song|explicit|clean)\s*[)\]]/gi,
   /\s*[([]\s*official\s*[)\]]/gi,
+  /\s+[-–—|]\s*(?:official\s+)?(?:music\s+|lyrics?\s+)?(?:video|audio|visuali[sz]er|lyrical\s+video|lyrics|m\/?v|hd|4k|full\s*song)(?:\s+(?:hd|4k))?\s*$/i,
 ];
 
 /** A YouTube title as a lyrics database indexed it: credits and packaging off, version words kept. */

@@ -27,8 +27,9 @@ export const LYRIC_EXTENSION_ORIGINS = [
   'https://unison.boidu.dev',
 ];
 
-const DIRECT_TIMEOUT_MS = 6000;
-const EXTENSION_TIMEOUT_MS = 15_000;
+const DIRECT_TIMEOUT_MS = 5500;
+const EXTENSION_TIMEOUT_MS = 6500;
+const PATIENT_TIMEOUT_MS = 12_000;
 
 /** Lyric hosts the extension was refused for: the panel offers to allow them. */
 export const ungrantedOrigins = new Set<string>();
@@ -72,14 +73,14 @@ export interface GetOptions {
   patient?: boolean;
 }
 
-async function viaExtension(url: string, headers: Record<string, string> | undefined): Promise<string | null> {
+async function viaExtension(url: string, headers: Record<string, string> | undefined, patient?: boolean): Promise<string | null> {
   const bridge = getBridge();
   if (!bridge) return null;
   try {
     const response = await bridge.call(
       'lyrics.fetch',
       { url, ...(headers && { headers }) },
-      { timeoutMs: EXTENSION_TIMEOUT_MS },
+      { timeoutMs: patient ? PATIENT_TIMEOUT_MS : EXTENSION_TIMEOUT_MS },
     );
     if (response.status < 200 || response.status >= 300) return null;
     return response.bodyEncoding === 'base64' ? new TextDecoder().decode(Uint8Array.from(atob(response.body), (c) => c.charCodeAt(0))) : response.body;
@@ -96,17 +97,17 @@ async function viaExtension(url: string, headers: Record<string, string> | undef
 }
 
 export async function lyricsGet(url: string, { route = 'direct', headers, patient }: GetOptions = {}): Promise<string | null> {
-  if (route === 'extension') return viaExtension(url, headers);
+  if (route === 'extension') return viaExtension(url, headers, patient);
   try {
     const response = await fetch(url, {
       headers: { Accept: 'application/json, text/plain, */*', ...headers },
-      signal: AbortSignal.timeout(patient ? EXTENSION_TIMEOUT_MS : DIRECT_TIMEOUT_MS),
+      signal: AbortSignal.timeout(patient ? PATIENT_TIMEOUT_MS : DIRECT_TIMEOUT_MS),
       referrerPolicy: 'no-referrer',
     });
     return response.ok ? await response.text() : null;
   } catch (error) {
     // A CORS refusal looks like a network error from here; the extension isn't bound by it.
-    if (error instanceof TypeError) return viaExtension(url, headers);
+    if (error instanceof TypeError) return viaExtension(url, headers, patient);
     return null;
   }
 }

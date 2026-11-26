@@ -51,6 +51,7 @@ object BucketMath {
             trackDays = addDayMaps(a.trackDays, b.trackDays),
             artistDays = addDayMaps(a.artistDays, b.artistDays),
             albumDays = addDayMaps(a.albumDays, b.albumDays),
+            moodCounts = addMaps(a.moodCounts, b.moodCounts) { x, y -> x + y },
         )
     }
 

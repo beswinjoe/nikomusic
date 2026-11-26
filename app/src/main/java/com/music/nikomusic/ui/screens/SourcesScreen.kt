@@ -188,7 +188,7 @@ fun SourcesScreen(
     val ceiling = if (metered == true) cellularQuality else wifiQuality
 
     /** Whether the ceiling in force right now would cap a lossless stream anyway. */
-    val cappedByQuality = ceiling != AudioQuality.LOSSLESS
+    val cappedByQuality = ceiling != AudioQuality.LOSSLESS && ceiling != AudioQuality.HI_RES_LOSSLESS
     // Asked of the kinds themselves rather than of the module specifically, so
     // a source added later answers this on its own terms instead of being
     // invisible to it.
@@ -969,6 +969,7 @@ private fun AudioQuality.localizedLabel(): String = stringResource(
         AudioQuality.MEDIUM -> R.string.medium
         AudioQuality.HIGH -> R.string.high
         AudioQuality.LOSSLESS -> R.string.lossless
+        AudioQuality.HI_RES_LOSSLESS -> R.string.hi_res_lossless
     },
 )
 

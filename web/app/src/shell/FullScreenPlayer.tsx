@@ -18,20 +18,18 @@ import { FavoriteButton } from '@/components/music/FavoriteButton';
 import { TrackMenu } from '@/components/music/TrackMenu';
 import { albumHref } from '@/components/music/links';
 import { MotionArtwork } from '@/components/music/MotionArtwork';
-import { VideoSurface } from '@/components/music/VideoSurface';
 import { useTrackMotion } from '@/data/apple/motionArt';
-import { sizedArtwork } from '@/lib/artwork';
+import { artworkFallbackUrl, heroArtwork, sizedArtwork } from '@/lib/artwork';
 import { usePlayer } from '@/state/player';
 import { useUi } from '@/state/ui';
-import { useHasVideo, useVideo } from '@/state/video';
 import { Credits, PageLink, pageLink } from './Lcd';
 import { LyricsPanel } from './LyricsPanel';
 import { MeshBackdrop } from './MeshBackdrop';
 import { albumPageFor } from './nowPlayingLinks';
+import { SleepTimerButton } from './SleepTimerMenu';
 import { UpNext } from './UpNext';
 import { MixWindowHighlight, NerdStats } from './NerdStats';
 import { useScrubber } from './useScrubber';
-import { VideoQuality } from './VideoQuality';
 import { fadeForVolume, VolumeControl } from './VolumeControl';
 
 function useBrowserFullScreen(): boolean {
@@ -58,7 +56,7 @@ function Scrubber() {
           <MixWindowHighlight />
           <div
             ref={bar}
-            className="relative size-full origin-left scale-x-(--progress) bg-key transition-[background-color] duration-120 ease-in [--progress:0] group-hover/hit:bg-key-rollover group-data-dragging/scrub:bg-key-rollover"
+            className="relative size-full origin-left scale-x-(--progress) bg-white/95 transition-[background-color] duration-120 ease-in [--progress:0] group-hover/hit:bg-white group-data-dragging/scrub:bg-white"
           />
         </div>
       </div>
@@ -117,22 +115,77 @@ function Transport() {
 // Close, browser full screen, the column toggles and the speaker, in the corners.
 const chromeButton =
   'grid size-8 place-items-center rounded-full text-secondary transition-[background-color,color] duration-100 ease-in hover:bg-quinary hover:text-primary';
-const chrome = `absolute z-1 ${chromeButton}`;
-const artworkLayer = 'absolute inset-0 size-full rounded-[inherit] object-cover opacity-0 transition-opacity duration-300 ease-in';
+const chrome = `absolute z-2 ${chromeButton}`;
+const artworkLayer =
+  'absolute inset-0 size-full object-cover transition-[opacity,transform,filter] duration-900 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[opacity,transform,filter]';
 
-/** How long the pointer can rest before a playing music video hides its controls. */
-const IDLE_MS = 3000;
+/** Crossfades smoothly between poster URLs (up to 8K) with automatic stepdown fallback on CDN error. */
+function HeroPoster({ src, className }: { src: string; className: string }) {
+  const [settledSrc, setSettledSrc] = useState(src);
+  const [pendingSrc, setPendingSrc] = useState<string | null>(null);
+  const [pendingLoaded, setPendingLoaded] = useState(false);
+
+  useEffect(() => {
+    if (src === settledSrc) {
+      setPendingSrc(null);
+      setPendingLoaded(false);
+      return;
+    }
+    setPendingSrc(src);
+    setPendingLoaded(false);
+  }, [src, settledSrc]);
+
+  useEffect(() => {
+    if (!pendingSrc || !pendingLoaded) return;
+    const id = setTimeout(() => {
+      setSettledSrc(pendingSrc);
+      setPendingSrc(null);
+      setPendingLoaded(false);
+    }, 940);
+    return () => clearTimeout(id);
+  }, [pendingSrc, pendingLoaded]);
+
+  return (
+    <>
+      <img
+        src={settledSrc}
+        alt=""
+        referrerPolicy="no-referrer"
+        decoding="async"
+        onError={() => {
+          const fallback = artworkFallbackUrl(settledSrc);
+          if (fallback && fallback !== settledSrc) setSettledSrc(fallback);
+        }}
+        className={`${className} opacity-100 scale-100 blur-0`}
+      />
+      {pendingSrc && (
+        <img
+          key={pendingSrc}
+          src={pendingSrc}
+          alt=""
+          referrerPolicy="no-referrer"
+          decoding="async"
+          onLoad={() => setPendingLoaded(true)}
+          onError={() => {
+            const fallback = artworkFallbackUrl(pendingSrc);
+            if (fallback && fallback !== pendingSrc) {
+              setPendingSrc(fallback);
+            } else {
+              setPendingSrc(null);
+              setPendingLoaded(false);
+            }
+          }}
+          className={`${className} ${pendingLoaded ? 'opacity-100 scale-100 blur-0' : 'opacity-0 scale-[1.02] blur-[6px]'}`}
+        />
+      )}
+    </>
+  );
+}
 
 /**
- * The full-screen player (report §7): the artwork on the left with the
- * track's names, the seek line and the transport under it; the lyrics, the
- * same am-lyrics panel as the side panel's, on the right; all over a mesh
- * gradient of the artwork's colours. With the lyrics closed, the artwork
- * column sits in the middle on its own, as Apple's does.
- *
- * A music video plays as Apple's do: on its own, it fills the window with
- * the names and transport over its foot, fading out while the pointer rests;
- * beside the lyrics or Up Next, it takes the artwork's place at 16:9.
+ * The full-screen player (report §7): beside Lyrics or Up Next, the artwork sits
+ * beside the right column; when neither column is open, a centered unzoomed
+ * poster card sits in the middle above the track info and controls.
  */
 export function FullScreenPlayer() {
   const nowPlaying = usePlayer((s) => s.nowPlaying);
@@ -147,17 +200,10 @@ export function FullScreenPlayer() {
   const openedAt = useRef(pathname);
   const playing = usePlayer((s) => s.status === 'playing' || s.status === 'buffering');
   const setFullScreen = useUi((s) => s.setFullScreen);
-  const video = useHasVideo(nowPlaying?.videoId);
   // The right-hand column: the lyrics, Up Next, or nothing. Lyrics toggle bottom left, Up Next bottom right.
-  // A music video opens on its own, without the lyrics.
-  const [panel, setPanel] = useState<'lyrics' | 'queue' | null>(() =>
-    nowPlaying && useVideo.getState().videoId === nowPlaying.videoId ? null : 'lyrics',
-  );
-  // Once the listener picks a column, a video arriving late doesn't take it away.
-  const picked = useRef(false);
-  const [idle, setIdle] = useState(false);
+  // Keep Lyrics visible side-by-side when toggled on; never drop lyrics just because a video plays
+  const [panel, setPanel] = useState<'lyrics' | 'queue' | null>('lyrics');
   const [volumeOpen, setVolumeOpen] = useState(false);
-  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const browserFullScreen = useBrowserFullScreen();
   const close = useRef<HTMLButtonElement>(null);
   // Whether this player put the page in the browser's full screen, so closing it leaves it again.
@@ -168,25 +214,8 @@ export function FullScreenPlayer() {
   const showLyrics = panel === 'lyrics';
   const showQueue = panel === 'queue';
   const togglePanel = (p: 'lyrics' | 'queue') => {
-    picked.current = true;
     setPanel((on) => (on === p ? null : p));
   };
-
-  useEffect(() => {
-    if (video && !picked.current) setPanel(null);
-  }, [video]);
-
-  const wake = () => {
-    setIdle(false);
-    if (idleTimer.current) clearTimeout(idleTimer.current);
-    idleTimer.current = setTimeout(() => setIdle(true), IDLE_MS);
-  };
-  useEffect(() => {
-    wake();
-    return () => {
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-    };
-  }, []);
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
@@ -222,43 +251,34 @@ export function FullScreenPlayer() {
   if (!nowPlaying) return null;
   const { videoId, title, artist } = nowPlaying;
   const album = track?.album ?? null;
-  // With a right-hand column; on narrow windows that column fills the screen and the controls sit under it, without the artwork.
+  // With a right-hand column; on narrow windows the video stays visible cleanly above lyrics/queue.
   const column = showLyrics || showQueue;
-  // A music video on its own fills the window.
-  const theater = video && !column;
-  // ...and hides the controls and the pointer while it plays undisturbed.
-  const hidden = theater && playing && idle ? ' pointer-events-none opacity-0' : '';
-  const corner = `${chrome} transition-[background-color,color,opacity] duration-300${hidden}`;
+  const corner = `${chrome} transition-[background-color,color,opacity] duration-300`;
 
   return (
     <div
       // Over everything but menus and dialogs, which portal above it. The on-dark colours come from tokens.css (data-full-screen).
       // --art, the artwork's side: Apple's 461px at 1440px wide, and never taller than the screen leaves room for.
-      className="fixed inset-0 z-[calc(var(--z-contextual-menus)-2)] isolate animate-enter overflow-hidden text-primary [--art:min(32vw,calc(100dvh-330px),720px)] motion-reduce:[animation-name:fade-in] max-md:[--art:min(84vw,calc(100dvh-330px),420px)]"
+      className="fixed inset-0 z-[calc(var(--z-contextual-menus)-2)] isolate animate-enter overflow-hidden text-primary [--art:min(32vw,calc(100dvh-330px),520px)] motion-reduce:[animation-name:fade-in] max-md:[--art:min(82vw,calc(100dvh-340px),390px)]"
       role="dialog"
       aria-modal="true"
       aria-label="Now Playing"
       data-full-screen
       data-paused={!playing || undefined}
-      onPointerMove={wake}
-      onPointerDown={wake}
-      onKeyDown={wake}
-      style={theater && playing && idle ? { cursor: 'none' } : undefined}
     >
       <MeshBackdrop artworkUrl={nowPlaying.artworkUrl} playing={playing} />
-      {theater && (
-        <div className="absolute inset-0 animate-fade-in bg-black">
-          <VideoSurface fit="contain" className="size-full" />
-        </div>
-      )}
+
+      {/* Subtle top scrim keeps close and fullscreen chrome legible over mobile top-docked artwork when a column is open */}
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-0 z-1 h-28 bg-gradient-to-b from-black/45 via-black/15 to-transparent transition-opacity duration-300 ${
+          column ? 'md:opacity-0' : 'opacity-0'
+        }`}
+        aria-hidden="true"
+      />
 
       <button ref={close} className={`${corner} top-4 left-5`} aria-label="Close" onClick={() => setFullScreen(false)}>
         <X size={20} />
       </button>
-      {/* The music video's quality, just inside the full-screen button. */}
-      {video && (
-        <VideoQuality className={`absolute top-[18px] z-1${hidden}${document.fullscreenEnabled ? ' right-15' : ' right-5'}`} />
-      )}
       {document.fullscreenEnabled && (
         <button
           className={`${corner} top-4 right-5`}
@@ -269,70 +289,68 @@ export function FullScreenPlayer() {
         </button>
       )}
 
-      {/* Apple's grid areas "controls lyrics": the artwork column, then the lyrics. */}
+      {/* Centered square poster card in non-lyrics mode (no viewport zoom), or side-by-side beside Lyrics/Up Next. */}
       <div
         className={
-          theater
-            ? `absolute inset-x-0 bottom-0 flex justify-center bg-[linear-gradient(to_top,rgb(0_0_0/0.72),rgb(0_0_0/0.35)_55%,transparent)] px-6 pt-32 pb-16 transition-opacity duration-300${hidden}`
-            : `grid h-full items-center justify-center gap-x-[clamp(48px,7vw,144px)] px-[clamp(24px,9vw,144px)] py-16 max-md:px-6 max-md:pb-18 ${
-                column
-                  ? 'grid-cols-[var(--art)_minmax(0,38vw)] max-md:grid-cols-[minmax(0,1fr)] max-md:grid-rows-[minmax(0,1fr)_auto] max-md:items-stretch max-md:gap-y-4'
-                  : 'grid-cols-[var(--art)]'
-              }`
+          column
+            ? 'grid h-full items-center justify-center gap-x-[clamp(48px,7vw,144px)] px-[clamp(24px,9vw,144px)] py-16 max-md:grid-cols-[minmax(0,1fr)] max-md:grid-rows-[minmax(0,1fr)_auto] max-md:items-stretch max-md:gap-y-3 max-md:px-6 max-md:pt-[min(25dvh,190px)] max-md:pb-18 grid-cols-[var(--art)_minmax(0,38vw)]'
+            : 'relative z-1 flex h-full flex-col items-center justify-center px-6 py-14 max-md:px-6 max-md:py-16'
         }
         data-lyrics={column || undefined}
       >
         <section
           className={
-            theater ? 'flex w-[min(720px,100%)] min-w-0 flex-col' : `flex w-(--art) min-w-0 flex-col${column ? ' max-md:order-2 max-md:w-full' : ''}`
+            column
+              ? 'flex w-(--art) min-w-0 flex-col max-md:order-2 max-md:w-full'
+              : 'relative z-1 mx-auto flex w-[max(var(--art),min(100%,320px))] max-w-full min-w-0 flex-col'
           }
           aria-label="Player"
         >
-          {/* Shrinks a touch while paused, as Apple's does. Beside a column, a music video plays here at 16:9. */}
+          {/* Poster card: unzoomed centered artwork card when lyrics/queue are closed; beside Lyrics/Up Next when open. */}
           <div
-            className={`relative w-(--art) rounded-[10px] transition-[scale] duration-450 ease-[cubic-bezier(0.34,1.3,0.64,1)] motion-reduce:transition-none${
-              video ? ' aspect-video overflow-hidden bg-black' : ' aspect-square'
-            }${playing ? '' : ' scale-92'}${column ? ' max-md:hidden' : ''}${theater ? ' hidden' : ''}`}
+            className={
+              column
+                ? `max-md:pointer-events-none max-md:fixed max-md:inset-x-0 max-md:top-0 max-md:z-0 max-md:h-[min(30dvh,225px)] max-md:overflow-hidden max-md:[mask-image:linear-gradient(180deg,#000_48%,rgba(0,0,0,0.82)_74%,transparent_100%)] md:relative md:w-(--art) md:aspect-square md:overflow-hidden md:[mask-image:radial-gradient(96%_92%_at_50%_50%,#000_58%,rgba(0,0,0,0.72)_78%,transparent_98%)] md:transition-[scale,filter] md:duration-500 md:ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none${
+                    playing ? '' : ' md:scale-94'
+                  }`
+                : `relative mx-auto aspect-square w-(--art) max-w-full overflow-hidden rounded-[var(--radius-artwork-lg)] shadow-[0_24px_64px_rgb(0_0_0/0.46)] artwork-stroke transition-[transform,filter] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none${
+                    playing ? ' scale-100' : ' scale-[0.94]'
+                  }`
+            }
           >
             {nowPlaying.artworkUrl && (
               <>
-                <img
-                  key={`glow-${nowPlaying.artworkUrl}`}
-                  // The radiosity glow: a small copy, blurred and saturated, behind the artwork.
-                  className={`${artworkLayer} -z-1 translate-y-2 scale-96 blur-[20px] saturate-200 data-loaded:opacity-40`}
-                  src={sizedArtwork(nowPlaying.artworkUrl, 60)}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  decoding="async"
-                  onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
-                />
-                <img
-                  key={nowPlaying.artworkUrl}
-                  className={`${artworkLayer} bg-[#ffffff12] shadow-[0_4px_10px_#0000001a] data-loaded:opacity-100`}
-                  src={sizedArtwork(nowPlaying.artworkUrl, 600)}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  decoding="async"
-                  onLoad={(e) => e.currentTarget.setAttribute('data-loaded', '')}
+                <div
+                  className={`pointer-events-none absolute inset-0 -z-1 translate-y-2 scale-96 blur-[24px] saturate-200 opacity-35${
+                    column ? ' max-md:hidden' : ''
+                  }`}
+                >
+                  <HeroPoster
+                    src={sizedArtwork(nowPlaying.artworkUrl, 60)}
+                    className={artworkLayer}
+                  />
+                </div>
+                <HeroPoster
+                  src={heroArtwork(nowPlaying.artworkUrl, 7680)}
+                  className={artworkLayer}
                 />
               </>
             )}
-            {/* Apple's motion artwork, over the cover once it's playing. */}
+            {/* Apple's motion artwork, cleanly layered above the poster. */}
             {motion && (
               <MotionArtwork
                 key={motion.url}
                 motion={motion}
-                className="absolute inset-0 size-full rounded-[inherit] object-cover opacity-0 transition-opacity duration-600 ease-in data-ready:opacity-100"
+                className="absolute inset-0 size-full object-cover opacity-0 transition-opacity duration-600 ease-out data-ready:opacity-100"
                 playing={playing}
               />
             )}
-            {video && !theater && <VideoSurface className="absolute inset-0" />}
           </div>
 
-          <div className={`flex items-center gap-3${theater ? '' : ' mt-[clamp(20px,3.2vh,32px)]'}${column ? ' max-md:mt-0' : ''}`}>
+          <div className="relative z-1 mt-[clamp(16px,2.8vh,26px)] flex items-center gap-3 max-md:mt-3.5">
             {/* As the mini player's: the title opens the album, each credited name its artist. */}
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex min-w-0 items-center">
+              <div className="flex min-w-0 items-center gap-1.5">
                 <PageLink
                   className={`min-w-0 max-w-full self-start truncate type-[600_17px/22px] ${pageLink}`}
                   href={albumHref(album?.id ?? null)}
@@ -357,6 +375,10 @@ export function FullScreenPlayer() {
               </span>
               <NerdStats />
             </div>
+            <SleepTimerButton
+              className="flex h-8 min-w-8 flex-none items-center justify-center gap-1 rounded-full bg-quinary px-2 text-primary transition-colors hover:bg-quaternary aria-pressed:bg-white/22"
+              placement="above-end"
+            />
             <FavoriteButton
               videoId={nowPlaying.videoId}
               className="grid size-8 flex-none place-items-center rounded-full bg-quinary text-primary hover:bg-quaternary"
@@ -401,7 +423,7 @@ export function FullScreenPlayer() {
       </button>
       {/* Up Next, with the speaker beside it: the level slides in over Up Next, as it does in the pill. */}
       <div
-        className={`group/actions absolute right-5 bottom-5 z-1 flex items-center [--volume-gap:36px] transition-opacity duration-300${hidden}`}
+        className="group/actions absolute right-5 bottom-5 z-1 flex items-center [--volume-gap:36px] transition-opacity duration-300"
         data-volume-open={volumeOpen || undefined}
         onPointerLeave={() => setVolumeOpen(false)}
         onBlur={(event) => {

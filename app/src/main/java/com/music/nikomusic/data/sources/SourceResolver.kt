@@ -64,7 +64,7 @@ object SourceResolver {
         // sources. It was a switch whose only real effect was to downgrade the
         // one source that could do better.
         return when {
-            ceiling == AudioQuality.LOSSLESS -> StreamRequest.Lossless
+            ceiling == AudioQuality.LOSSLESS || ceiling == AudioQuality.HI_RES_LOSSLESS -> StreamRequest.Lossless
             ceiling.maxKbps == Int.MAX_VALUE -> StreamRequest.Best
             else -> StreamRequest.Capped(ceiling.maxKbps)
         }

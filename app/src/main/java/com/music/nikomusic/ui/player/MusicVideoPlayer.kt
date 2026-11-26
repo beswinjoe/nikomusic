@@ -1,8 +1,10 @@
 package com.music.nikomusic.ui.player
 
 import android.content.Context
+import android.os.Build
 import android.view.TextureView
 import android.view.ViewGroup
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -18,7 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.C
@@ -564,9 +568,13 @@ internal fun AndroidMusicVideo(
     modifier: Modifier,
     /** Which surface wins when two are mounted: the full player's, over the mini player's. */
     priority: Int = 1,
+    /** Bottom edge fade fraction (0f = sharp edge, >0f = hero feather dissolve into backdrop). */
+    bottomFade: Float = 0f,
 ) {
     val foreground = rememberIsForeground()
     var view by remember { mutableStateOf<TextureView?>(null) }
+    var containerBounds by remember { mutableStateOf(IntSize.Zero) }
+    val lastFadeKey = remember { intArrayOf(0) }
     DisposableEffect(view, foreground, priority) {
         val target = view
         val release = if (target != null && foreground) MusicVideoEngine.claim(target, priority) else null
@@ -590,14 +598,19 @@ internal fun AndroidMusicVideo(
 
     val alpha by animateFloatAsState(
         targetValue = if (rendered) 1f else 0f,
-        animationSpec = tween(durationMillis = 320),
+        animationSpec = tween(durationMillis = 480, easing = FastOutSlowInEasing),
         label = "musicVideoAlpha",
     )
 
-    Box(modifier.clipToBounds(), contentAlignment = Alignment.Center) {
+    Box(
+        modifier
+            .onSizeChanged { containerBounds = it }
+            .clipToBounds(),
+        contentAlignment = Alignment.Center,
+    ) {
         AndroidView(
             factory = { context ->
-                TextureView(context).apply {
+                val texture = TextureView(context).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -608,9 +621,37 @@ internal fun AndroidMusicVideo(
                     this.alpha = 0f
                     view = this
                 }
+                FadingBottomFrame(context).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    addView(texture)
+                }
             },
-            update = { it.alpha = alpha },
-            onRelease = { if (view === it) view = null },
+            update = { frame ->
+                val texture = frame.getChildAt(0) as TextureView
+                texture.alpha = alpha
+                val alignTop = !fit && bottomFade > 0.001f && containerBounds.height > 0 &&
+                    (containerBounds.width.toFloat() / containerBounds.height) > aspect
+                val endPx = if (alignTop) containerBounds.height.toFloat() else null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val texBounds = IntSize(texture.width, texture.height)
+                    val fadeKey = ObjectsHash(bottomFade, texBounds.width, texBounds.height, endPx)
+                    if (fadeKey != lastFadeKey[0]) {
+                        lastFadeKey[0] = fadeKey
+                        frame.updateBottomFade(bottomFade, texBounds, endPx)
+                        texture.setRenderEffect(frame.bottomEffect)
+                    }
+                } else {
+                    frame.fadeFraction = bottomFade
+                    frame.fadeEndPx = endPx
+                }
+            },
+            onRelease = { frame ->
+                val texture = frame.getChildAt(0) as? TextureView
+                if (texture != null && view === texture) view = null
+            },
             // The picture at its own shape: letterboxed into the bounds, or
             // overflowing them and cropped by the clip above.
             modifier = Modifier.layout { measurable, constraints ->
@@ -627,11 +668,20 @@ internal fun AndroidMusicVideo(
                 } else {
                     width to (width / aspect).roundToInt()
                 }
+                val alignTop = !fit && wider && bottomFade > 0.001f
                 val placeable = measurable.measure(Constraints.fixed(w.coerceAtLeast(1), h.coerceAtLeast(1)))
                 layout(width, height) {
-                    placeable.place((width - w) / 2, (height - h) / 2)
+                    placeable.place((width - w) / 2, if (alignTop) 0 else (height - h) / 2)
                 }
             },
         )
     }
+}
+
+private fun ObjectsHash(fade: Float, w: Int, h: Int, endPx: Float?): Int {
+    var result = fade.toBits()
+    result = 31 * result + w
+    result = 31 * result + h
+    result = 31 * result + (endPx?.toBits() ?: 0)
+    return result
 }

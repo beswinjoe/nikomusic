@@ -112,7 +112,11 @@ object LrcRed {
                 hit.isrc?.let(::documentUrl) != null &&
                     coreOf(name) == wantedTitle &&
                     versionOf(name) == wantedVersion &&
-                    (wantedArtists.isEmpty() || artistsOf(hit.artist.orEmpty()).any { it in wantedArtists }) &&
+                    (if (wantedArtists.isNotEmpty()) {
+                        artistsOf(hit.artist.orEmpty()).any { it in wantedArtists }
+                    } else {
+                        durationMs > 0 && hit.duration != null
+                    }) &&
                     distance(hit) <= DURATION_TOLERANCE_SECONDS
             }
             .minByOrNull(::distance)

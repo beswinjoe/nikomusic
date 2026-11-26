@@ -1314,6 +1314,13 @@ object InnertubeParser {
             .o("watchEndpointMusicConfig").s("musicVideoType")
 
     private const val MUSIC_VIDEO_TYPE_ATV = "MUSIC_VIDEO_TYPE_ATV"
+    private const val MUSIC_VIDEO_TYPE_OMV = "MUSIC_VIDEO_TYPE_OMV"
+    private const val MUSIC_VIDEO_TYPE_UGC = "MUSIC_VIDEO_TYPE_UGC"
+
+    private val NON_ORIGINAL_UPLOAD_REGEX = Regex(
+        """\b(7clouds|shadow\s*music|koala\s*kontrol|taz\s*network|vibe\s*music|syrebralvibes|uniq\s*vibes|aura\s*melodic|chill\s*only|cloudkid|xefox|nightblue|wave\s*music|latin\s*hype|rap\s*city|trap\s*nation|bass\s*nation|lyrics?\s*hub|lyric(?:s|al)?\s*video|lyrics\s+video|fan\s*made|sped\s*up|slowed(?:\s*\+\s*reverb)?|nightcore|8d\s*audio|karaoke|tribute)\b""",
+        RegexOption.IGNORE_CASE,
+    )
 
     /**
      * Tracks of a watch queue (`next` response) — the AutoPlay radio mix.
@@ -1398,9 +1405,27 @@ object InnertubeParser {
      * way, in which case the time map is read backwards.
      */
     fun parseVersionPair(root: JsonElement, videoId: String, wantAudio: Boolean): VersionPair? {
+        // When seeking a video cut (wantAudio = false), accept authentic Official Music Videos
+        // and reject third-party UGC / 7clouds / fan lyric re-uploads.
+        fun JsonObject.isOriginalVideoCandidate(): Boolean {
+            val type = musicVideoType()
+            if (type == MUSIC_VIDEO_TYPE_ATV) return false
+            val title = o("title").runs()
+            val byline = o("longBylineText").runs()
+            if (NON_ORIGINAL_UPLOAD_REGEX.containsMatchIn(title) ||
+                NON_ORIGINAL_UPLOAD_REGEX.containsMatchIn(byline)
+            ) {
+                return false
+            }
+            if (type == MUSIC_VIDEO_TYPE_OMV) return true
+            return type != MUSIC_VIDEO_TYPE_UGC
+        }
+
         // A row whose type YouTube left out is still the other half of a pair;
         // only a row that says it is the wrong kind is turned away.
-        fun JsonObject.fits(): Boolean = musicVideoType()?.let { (it == MUSIC_VIDEO_TYPE_ATV) == wantAudio } ?: true
+        fun JsonObject.fits(): Boolean =
+            if (wantAudio) musicVideoType()?.let { it == MUSIC_VIDEO_TYPE_ATV } ?: true
+            else isOriginalVideoCandidate()
 
         collectRenderers(root, "playlistPanelVideoWrapperRenderer").forEach { wrapper ->
             val primary = wrapper.o("primaryRenderer").o("playlistPanelVideoRenderer") ?: return@forEach

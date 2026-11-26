@@ -1,5 +1,6 @@
 import { StarFilledIcon, StarIcon } from '@/components/icons/Transport';
 import { useLikeStatus, useSetLiked, useSignedIn } from '@/data/music/queries';
+import { setTrackLiked } from '@/data/music/tasteProfile';
 
 interface FavoriteButtonProps {
   videoId: string | null;
@@ -26,6 +27,7 @@ export function FavoriteButton({ videoId, className, size = 18 }: FavoriteButton
       disabled={status.isPending}
       onClick={(event) => {
         event.stopPropagation();
+        setTrackLiked(videoId, !liked);
         setLiked.mutate({ videoId, liked: !liked });
       }}
     >

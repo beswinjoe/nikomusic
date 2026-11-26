@@ -159,7 +159,7 @@ export async function lookupLyrics(track: LyricsTrack, { only, onSource }: Looku
 
   const run = (source: LyricsSourceId) => {
     onSource?.(source, 'pending');
-    return fetchFrom(source)
+    return withTimeout(fetchFrom(source), 6000)
       .catch(() => null)
       .then((parsed) => {
         // An instrumental's notice is no lyrics, from whichever source relays it (QQ through Portato, KuGou).

@@ -15,10 +15,12 @@ import com.music.nikomusic.data.AppUpdateChecker
 import com.music.nikomusic.data.LocalMediaRepository
 import com.music.nikomusic.data.LikeState
 import com.music.nikomusic.data.YtMusicRepository
+import com.music.nikomusic.data.RecommendationEngine
 import com.music.nikomusic.data.TopPicks
 import com.music.nikomusic.data.AppleArtistPhotos
 import com.music.nikomusic.data.model.ArtistRef
 import com.music.nikomusic.data.model.TopPick
+import com.music.nikomusic.data.model.TopPickMood
 import com.music.nikomusic.data.stats.ListeningStats
 import com.music.nikomusic.data.stats.ReplayPeriod
 import android.util.Log
@@ -1988,15 +1990,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** This app's own Replay chart for the month — Top Picks' second opinion, and all it has signed out. */
+    /** This app's own Replay chart, skip patterns, likes, genres and mood affinity. */
     private suspend fun localTaste(): TopPicks.LocalTaste {
         val month = runCatching { ListeningStats.summary(ReplayPeriod.THIS_MONTH) }.getOrNull()
-            ?: return TopPicks.LocalTaste()
+        val snapshot = runCatching { ListeningStats.tasteSnapshot() }.getOrNull()
+        val likedSongs = (_library.value as? UiState.Success)?.data?.likedSongs.orEmpty()
+        val likedWithOverrides = likedSongs.filter {
+            likeStatuses.value[it.videoId] != LikeStatus.INDIFFERENT &&
+                likeStatuses.value[it.videoId] != LikeStatus.DISLIKE
+        }
+        val moodAffinities = snapshot?.moodCounts?.entries
+            ?.mapNotNull { (name, count) ->
+                runCatching { TopPickMood.valueOf(name) }.getOrNull()?.let { it to count.toDouble() }
+            }
+            ?.toMap()
+            .orEmpty()
         return TopPicks.LocalTaste(
-            artists = month.artists.take(10).map { ArtistRef(name = it.title, browseId = it.browseId) },
-            songs = month.songs.take(5).map { it.song },
-            genres = month.genres.take(3).map { it.title },
+            artists = month?.artists?.take(15)?.map { ArtistRef(name = it.title, browseId = it.browseId) }.orEmpty(),
+            songs = month?.songs?.take(10)?.map { it.song }.orEmpty(),
+            genres = month?.genres?.take(5)?.map { it.title }.orEmpty(),
+            likedSongs = likedWithOverrides,
+            recentSongIds = snapshot?.recentSongIds.orEmpty(),
+            trackStats = snapshot?.trackStats.orEmpty(),
+            artistGenres = snapshot?.artistGenres.orEmpty(),
+            moodAffinities = moodAffinities,
+            discoveredArtists = snapshot?.discoveredArtists.orEmpty(),
         )
+    }
+
+    /** Records an explicit mood tile tap to improve future mood recommendations. */
+    fun noteMoodSelected(mood: TopPickMood) {
+        ListeningStats.recordMoodSelection(mood.name)
+        TopPicks.noteMoodSelected(mood)
     }
 
     /**
@@ -2023,9 +2048,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             })
             return
         }
-        val added = shelves.withoutRepeatsOf(existing)
+        val filtered = RecommendationEngine.differentiateShelves(shelves, localTasteQuick())
+        val added = filtered.withoutRepeatsOf(existing)
             .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
         if (added.isNotEmpty()) _home.value = UiState.Success(existing + added)
+    }
+
+    /** Fast non-suspending taste view built from liked tracks so home shelving stays non-blocking. */
+    private fun localTasteQuick(): RecommendationEngine.ListenerProfile {
+        val liked = likeStatuses.value.filterValues { it == LikeStatus.LIKE }.keys
+        val disliked = likeStatuses.value.filterValues { it == LikeStatus.DISLIKE }.keys
+        return RecommendationEngine.ListenerProfile(
+            likedTrackIds = liked,
+            dislikedTrackIds = disliked,
+        )
     }
 
     /** Refreshes the core feed without blanking the current Play page first. */
@@ -2038,7 +2074,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (identity != listenerKey()) return@onSuccess
             homeContinuation = feed.continuation
             homeSeenTitles.clear()
-            val shelves = feed.shelves.withoutRepeatsOf(emptyList())
+            val shelves = RecommendationEngine.differentiateShelves(feed.shelves, localTasteQuick())
+                .withoutRepeatsOf(emptyList())
                 .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
             if (shelves.isNotEmpty()) _home.value = UiState.Success(shelves)
         }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"nikomusic/backend/ai"
 	"nikomusic/backend/clock"
 	"nikomusic/backend/codes"
 	"nikomusic/backend/config"
@@ -36,6 +38,14 @@ var (
 		config.PresenceMaxEntries,
 	)
 	presenceLimiter = newIPRateLimiter(time.Minute, config.PresencePingsPerMinute, config.PresenceRateLimitMaxIPs)
+	aiLimiter = newIPRateLimiter(time.Minute, config.AIRatePerMinute, config.RateLimitMaxEntries)
+	aiRecommender = ai.NewRecommender(ai.Config{
+		GeminiAPIKey:  config.GeminiAPIKey,
+		GeminiModel:   config.GeminiModel,
+		OpenAIAPIKey:  config.OpenAIAPIKey,
+		OpenAIBaseURL: config.OpenAIBaseURL,
+		OpenAIModel:   config.OpenAIModel,
+	})
 	upgrader = websocket.Upgrader{
 		// Answered only to a browser that offered it with its token (see
 		// parseSocketToken); a native client offers no subprotocol and gets none.
@@ -63,10 +73,11 @@ func main() {
 	mux.HandleFunc("GET /api/parties/{code}/preview", handlePreviewParty)
 	mux.HandleFunc("POST /api/parties/{code}/leave", handleLeaveParty)
 
-	// Open-app counter
+	// Open-app counter & background AI taste curator
 	mux.HandleFunc("POST /api/presence", handlePresence)
 	mux.HandleFunc("GET /api/stats/live", handleLiveStats)
 	mux.HandleFunc("GET /api/stats/live/badge.svg", handleLiveBadge)
+	mux.HandleFunc("POST /api/ai/recommend", handleAIRecommend)
 
 	// Web invite endpoint
 	mux.HandleFunc("GET /invite/{code}", handleInviteLanding)
@@ -313,6 +324,44 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		presenceTracker.Close(id)
 	}
 	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})
+}
+
+// handleAIRecommend accepts compact background listener taste signatures and returns AI-curated
+// music discovery queries using server-only credentials (never exposed to users).
+func handleAIRecommend(w http.ResponseWriter, r *http.Request) {
+	if !aiLimiter.Allow(clientIP(r)) {
+		jsonError(w, http.StatusTooManyRequests, "rate_limited", "Too many recommendation requests.")
+		return
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && !config.IsAllowedOrigin(origin) {
+		jsonError(w, http.StatusForbidden, "origin_not_allowed", "Origin not allowed.")
+		return
+	}
+	var req ai.RecommendRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	if !aiRecommender.Enabled() {
+		jsonResponse(w, http.StatusOK, ai.RecommendResponse{
+			Enabled: false,
+			Queries: []string{},
+			Artists: []string{},
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	resp, err := aiRecommender.Recommend(ctx, req)
+	if err != nil {
+		log.Printf("ai recommend error: %v", err)
+		jsonResponse(w, http.StatusOK, ai.RecommendResponse{
+			Enabled: false,
+			Queries: []string{},
+			Artists: []string{},
+		})
+		return
+	}
+	jsonResponse(w, http.StatusOK, resp)
 }
 
 // handleLiveStats is public on purpose: anyone, including a README badge or

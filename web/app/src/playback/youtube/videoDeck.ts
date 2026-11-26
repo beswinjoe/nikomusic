@@ -1,7 +1,7 @@
 import shaka from 'shaka-player/dist/shaka-player.compiled';
-import { getVideoElement, qualityLabel, setVideoQuality, useVideo, type VideoQuality } from '@/state/video';
+import { getVideoElement, markVideoUnavailable, qualityLabel, setVideoQuality, useVideo, type VideoQuality } from '@/state/video';
 import { trackLog } from '../trackLog';
-import type { YouTubeEngine } from './engine';
+import { toBase64Utf8, type YouTubeEngine } from './engine';
 
 /**
  * A music video's picture, as Apple Music plays one: a second Shaka player,
@@ -111,6 +111,14 @@ async function refresh(): Promise<void> {
   const stream = wanted ? await wanted.engine.videoStream(quality === 'auto' ? null : quality).catch(() => null) : null;
   if (run !== generation) return;
   if (!stream) {
+    const failedId = wanted?.engine.loadedVideoId ?? null;
+    if (failedId) {
+      const { isKnownVideoCut, pairedAudioTrack } = await import('@/data/music/api');
+      if (isKnownVideoCut(failedId) || !!pairedAudioTrack(failedId)) {
+        markVideoUnavailable(failedId);
+        markVideoUnavailable(pairedAudioTrack(failedId)?.videoId);
+      }
+    }
     await unload();
     return;
   }
@@ -124,18 +132,29 @@ async function refresh(): Promise<void> {
   loadedQuality = quality;
   const video = getVideoElement();
   try {
+    for (const scheme of ['http', 'https']) {
+      shaka.net.NetworkingEngine.registerScheme(
+        scheme,
+        shaka.net.HttpFetchPlugin.parse,
+        shaka.net.NetworkingEngine.PluginPriority.FALLBACK,
+      );
+    }
     const shakaPlayer = await ensurePlayer();
     configureQuality(shakaPlayer, quality);
-    await shakaPlayer.load(`data:application/dash+xml;base64,${btoa(stream.manifest)}`, resumeAt, 'application/dash+xml');
+    await shakaPlayer.load(`data:application/dash+xml;base64,${toBase64Utf8(stream.manifest)}`, resumeAt, 'application/dash+xml');
     if (run !== generation) return;
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      await new Promise<void>((resolve) => video.addEventListener('loadeddata', () => resolve(), { once: true }));
+      await Promise.race([
+        new Promise<void>((resolve) => video.addEventListener('loadeddata', () => resolve(), { once: true })),
+        new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+      ]);
     }
     if (run !== generation) return;
     const active = shakaPlayer.getVariantTracks().find((t) => t.active);
     trackLog.i(`video: ${active?.height ?? '?'}p ${active?.videoCodec ?? ''} (${quality === 'auto' ? 'auto' : qualityLabel(quality)})`, stream.videoId);
     useVideo.setState({ videoId: stream.videoId, aspect: stream.aspect, heights: stream.heights, activeHeight: active?.height ?? null });
     sync();
+    if (!wanted!.audio.paused && video.paused) void video.play().catch(() => {});
     timer ??= setInterval(sync, SYNC_EVERY_MS);
   } catch (error) {
     if (run !== generation) return;
@@ -147,6 +166,11 @@ async function refresh(): Promise<void> {
     if (quality !== 'auto') {
       trackLog.w(`video: ${qualityLabel(quality)} wouldn't play; back to Auto`, stream.videoId);
       setVideoQuality('auto');
+    } else {
+      markVideoUnavailable(stream.videoId);
+      void import('@/data/music/api').then(({ pairedAudioTrack }) => {
+        markVideoUnavailable(pairedAudioTrack(stream.videoId)?.videoId);
+      });
     }
   }
 }

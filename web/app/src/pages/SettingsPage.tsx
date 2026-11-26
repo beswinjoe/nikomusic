@@ -11,7 +11,16 @@ import { useParty } from '@/party/useParty';
 import { useHistorySettings } from '@/playback/historyReporting';
 import { Select } from '@/components/Select';
 import { AUTOMIX_BARS } from '@/playback/automix/choices';
+import {
+  AUDIO_QUALITY_OPTIONS,
+  audioQualityOption,
+  browserSupportsDolbyAtmos,
+  isDolbyCodec,
+  type AudioQualityTier,
+} from '@/playback/audioQuality';
+import { useSleepTimer } from '@/playback/sleepTimer';
 import { CROSSFADE_CHOICES, usePlayer } from '@/state/player';
+import { SleepTimerSettingsRowStatus } from '@/shell/SleepTimerMenu';
 import { AppleMusicIntegration, AppleMusicToggles, CanvasToggle, DiscordIntegration, LyricSourcesAccess, SpotifyIntegration, Toggle } from './IntegrationSettings';
 import { settingsUi } from './settingsStyles';
 
@@ -63,9 +72,23 @@ export default function SettingsPage() {
   const automix = usePlayer((s) => s.automix);
   const automixBars = usePlayer((s) => s.automixBars);
   const showNerdStats = usePlayer((s) => s.showNerdStats);
+  const audioQuality = usePlayer((s) => s.audioQuality);
+  const dolbyAtmos = usePlayer((s) => s.dolbyAtmos);
+  const spatialAudio = usePlayer((s) => s.spatialAudio);
+  const playingStream = usePlayer((s) => s.nowPlaying?.stream);
+  const sleepFadeOut = useSleepTimer((s) => s.fadeOut);
+  const sleepAfterTrack = useSleepTimer((s) => s.afterTrack);
+  const sleepMinutes = useSleepTimer((s) => s.minutes);
+  const { start: startSleepTimer, startAfterTrack: startSleepAfterTrack, cancel: cancelSleepTimer, setFadeOut: setSleepFadeOut } =
+    useSleepTimer.getState();
+  const sleepStatus = SleepTimerSettingsRowStatus();
   const shareHistory = useHistorySettings((s) => s.share);
   const setShareHistory = useHistorySettings((s) => s.setShare);
-  const { setAutoplay, setCrossfade, setAutomix, setAutomixBars, setShowNerdStats } = usePlayer.getState();
+  const { setAutoplay, setCrossfade, setAutomix, setAutomixBars, setShowNerdStats, setAudioQuality, setDolbyAtmos, setSpatialAudio } =
+    usePlayer.getState();
+  const atmosSupport = browserSupportsDolbyAtmos();
+  const playingNativeAtmos = isDolbyCodec(playingStream?.codec, playingStream?.channels);
+  const selectedQualityInfo = audioQualityOption(audioQuality);
   const [lyrics, setLyrics] = useState(false);
   const present = extension.state === 'present';
   const discordText =
@@ -138,6 +161,30 @@ export default function SettingsPage() {
           />
         </section>
 
+        <h2 className={settingsUi.sectionHeader}>Audio Quality</h2>
+        <section className={settingsUi.group}>
+          <label className={settingsUi.controlRow}>
+            <span>Streaming Quality</span>
+            <Select<AudioQualityTier>
+              label="Streaming Quality"
+              value={audioQuality}
+              options={AUDIO_QUALITY_OPTIONS.map((q) => ({ value: q.id, label: `${q.label} (${q.hourly})` }))}
+              onChange={setAudioQuality}
+            />
+          </label>
+          <Toggle
+            label="Dolby Atmos"
+            detail={
+              atmosSupport.eac3 || atmosSupport.ac3
+                ? 'Prefer the immersive E-AC-3 surround mix when supported by the track.'
+                : 'Prefers surround streams when available; this browser currently decodes stereo Opus/AAC.'
+            }
+            checked={dolbyAtmos}
+            onChange={setDolbyAtmos}
+          />
+        </section>
+        <p className={settingsUi.footer}>{selectedQualityInfo.detail}. Changes apply cleanly from the next track.</p>
+
         <h2 className={settingsUi.sectionHeader}>Playback</h2>
         <section className={settingsUi.group}>
           <Toggle
@@ -146,26 +193,66 @@ export default function SettingsPage() {
             checked={autoplay}
             onChange={setAutoplay}
           />
+          <Toggle
+            label="Spatial Audio"
+            detail={
+              playingNativeAtmos
+                ? 'Paused for this track — native Dolby Atmos surround is already active.'
+                : 'Widens stereo soundstage with subtle binaural acoustic crossfeed DSP.'
+            }
+            checked={spatialAudio}
+            onChange={setSpatialAudio}
+          />
           <label className={settingsUi.controlRow}>
-            <span>Crossfade</span>
-            <Select<number | 'automix'>
-              label="Crossfade"
-              value={automix ? 'automix' : crossfadeSec}
+            <span>Sleep Timer</span>
+            <Select<string>
+              label="Sleep Timer"
+              value={sleepAfterTrack ? 'end' : sleepMinutes !== null ? String(sleepMinutes) : 'off'}
               options={[
-                ...CROSSFADE_CHOICES.map((seconds) => ({ value: seconds, label: seconds === 0 ? 'Off' : `${seconds} seconds` })),
-                { value: 'automix', label: 'Automix' },
+                { value: 'off', label: sleepStatus === 'Off' ? 'Off' : `Cancel (${sleepStatus})` },
+                { value: 'end', label: 'End of Current Track' },
+                { value: '15', label: '15 minutes' },
+                { value: '30', label: '30 minutes' },
+                { value: '45', label: '45 minutes' },
+                { value: '60', label: '60 minutes' },
               ]}
-              onChange={(value) => (value === 'automix' ? setAutomix(true) : setCrossfade(value))}
+              onChange={(val) => {
+                if (val === 'off') cancelSleepTimer();
+                else if (val === 'end') startSleepAfterTrack();
+                else startSleepTimer(Number(val));
+              }}
             />
           </label>
-          {automix && (
+          <Toggle
+            label="Sleep Timer Fade Out"
+            detail="Smoothly fade volume out over the final 30 seconds before pausing."
+            checked={sleepFadeOut}
+            onChange={setSleepFadeOut}
+          />
+          <Toggle
+            label="AutoMix"
+            detail="Beat-matched, phrase-aligned DJ transitions with smooth visual blends."
+            checked={automix}
+            onChange={setAutomix}
+          />
+          {automix ? (
             <label className={settingsUi.controlRow}>
-              <span>Blend Length</span>
+              <span>AutoMix Blend Length</span>
               <Select
-                label="Blend Length"
+                label="AutoMix Blend Length"
                 value={automixBars}
                 options={AUTOMIX_BARS.map((bars) => ({ value: bars, label: `Up to ${bars} bars` }))}
                 onChange={setAutomixBars}
+              />
+            </label>
+          ) : (
+            <label className={settingsUi.controlRow}>
+              <span>Crossfade</span>
+              <Select<number>
+                label="Crossfade"
+                value={crossfadeSec}
+                options={CROSSFADE_CHOICES.map((seconds) => ({ value: seconds, label: seconds === 0 ? 'Off' : `${seconds} seconds` }))}
+                onChange={setCrossfade}
               />
             </label>
           )}

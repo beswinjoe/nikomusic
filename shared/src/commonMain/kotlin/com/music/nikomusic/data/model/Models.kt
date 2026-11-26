@@ -307,13 +307,14 @@ fun String?.durationMillis(): Long {
     return (seconds * 1_000).coerceAtLeast(0L)
 }
 
-/** As [Song.artworkAt], for artwork that isn't a track's. */
+/** As [Song.artworkAt], for artwork that isn't a track's (supports up to 8K 7680px hero covers). */
 fun String?.artworkAt(px: Int): String? {
     if (this == null) return null
-    val sized = this.replace(SIZE_HINT, "w$px-h$px")
+    val clampedPx = px.coerceIn(48, 7680)
+    val sized = this.replace(SIZE_HINT, "w$clampedPx-h$clampedPx")
     return when {
-        isGoogleImageHost(this) -> sized.replace(PARAM_SIZE_HINT, "=s$px")
-        isYouTubeThumbnailHost(this) -> upgradeYouTubeThumbnail(sized, px)
+        isGoogleImageHost(this) -> sized.replace(PARAM_SIZE_HINT, "=s$clampedPx")
+        isYouTubeThumbnailHost(this) -> upgradeYouTubeThumbnail(sized, clampedPx)
         else -> sized
     }
 }
@@ -549,8 +550,35 @@ data class HomeShelf(
     val layout: ShelfLayout = ShelfLayout.CARDS,
 )
 
-/** These shelves without their music videos, and without any shelf that leaves empty. */
+private val THIRD_PARTY_UPLOAD_CHANNEL_OR_TITLE = Regex(
+    """\b(?:7clouds|shadow\s*music|koala\s*kontrol|taz\s*network|vibe\s*music|syrebralvibes|uniq\s*vibes|aura\s*melodic|chill\s*only|cloudkid|xefox|nightblue|wave\s*music|latin\s*hype|rap\s*city|trap\s*nation|bass\s*nation|lyrics?\s*hub|polar\s*records)\b""",
+    RegexOption.IGNORE_CASE,
+)
+private val FAN_VIDEO_KEYWORDS = Regex(
+    """\b(?:lyric(?:s|al)?\s*video|lyrics\s+video|fan\s*made|sped\s*up|slowed(?:\s*\+\s*reverb)?|nightcore|8d\s*audio|karaoke|tribute)\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** True when a track appears to come from a third-party fan/lyric channel rather than the official catalogue or artist channel. */
+fun Song.isThirdPartyUpload(): Boolean =
+    THIRD_PARTY_UPLOAD_CHANNEL_OR_TITLE.containsMatchIn(artist) ||
+        THIRD_PARTY_UPLOAD_CHANNEL_OR_TITLE.containsMatchIn(title) ||
+        FAN_VIDEO_KEYWORDS.containsMatchIn(title)
+
+/** True when a video cut represents an authentic official music video rather than a fan/lyric upload. */
+fun Song.isOriginalVideoCandidate(): Boolean = isVideo && !isThirdPartyUpload()
+
+private fun isUnifiedRecentsShelf(title: String): Boolean {
+    val trimmed = title.trim().lowercase()
+    return trimmed == "recents" || trimmed == "recently played" || trimmed == "listen again" || "history" in trimmed
+}
+
+/**
+ * These shelves without their music videos, and without any shelf that leaves empty.
+ * Recents / Listen again stay unified so music and music videos appear together chronologically.
+ */
 fun List<HomeShelf>.withoutVideos(): List<HomeShelf> = mapNotNull { shelf ->
+    if (isUnifiedRecentsShelf(shelf.title)) return@mapNotNull shelf
     if (shelf.layout == ShelfLayout.VIDEO) return@mapNotNull null
     val items = shelf.items.filterNot { it.isVideo }
     if (items.isEmpty()) null else shelf.copy(items = items)
@@ -565,7 +593,7 @@ fun shelfLayoutFor(title: String, items: List<ShelfItem>, fromList: Boolean): Sh
     if (items.isEmpty()) return ShelfLayout.CARDS
     val first = items.first()
     if (fromList && first.videoId != null) return ShelfLayout.LIST
-    if (title.trim().equals("Listen again", ignoreCase = true)) return ShelfLayout.LIST
+    if (isUnifiedRecentsShelf(title)) return ShelfLayout.LIST
     if (items.count { it.isVideo } * 2 > items.size) return ShelfLayout.VIDEO
     return ShelfLayout.CARDS
 }

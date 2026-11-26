@@ -24,7 +24,7 @@ export const LOOP_BARS = 4;
 /** Loop lengths tried, longest first: a 1-bar instrumental loop beats a 4-bar one with a word in it. */
 const LOOP_LENGTHS = [4, 2, 1] as const;
 /** Bars the incoming loop takes to come in at the outgoing tempo. */
-const ENTER_BARS = 4;
+const ENTER_BARS = 2;
 /** Bars the outgoing loop takes to drain away once the tempo has arrived. */
 const EXIT_BARS = 2;
 /** Bars after the incoming loop lets go before its <audio> element takes over. */
@@ -135,16 +135,25 @@ export function planLoopMix(
   const outBar = out.beatIntervalSec * 4;
   const inBar = inn.beatIntervalSec * 4;
 
-  // outgoing: the latest instrumental loop that ends before the song does
+  // outgoing: prefer clean instrumental loops in the final ~32 s tail before reaching further back
   const outEnd = Math.min(out.durationSec - 0.5, outBuffer.duration - 0.1);
   const outFirst = Math.max(earliestOutSec, out.durationSec - OUT_SEARCH_SEC);
-  const outPick = firstClean(
-    (bars) => loopsBetween(out.tailBeats, out.firstDownbeatSec!, outBar, outFirst, outEnd, bars).reverse(),
-    outBuffer,
-    out.vocals ?? [],
-    sung.out ?? null,
-    out.beatIntervalSec,
-  );
+  const idealOutFirst = Math.max(outFirst, out.durationSec - 32);
+  const outPick =
+    firstClean(
+      (bars) => loopsBetween(out.tailBeats, out.firstDownbeatSec!, outBar, idealOutFirst, outEnd, bars).reverse(),
+      outBuffer,
+      out.vocals ?? [],
+      sung.out ?? null,
+      out.beatIntervalSec,
+    ) ??
+    firstClean(
+      (bars) => loopsBetween(out.tailBeats, out.firstDownbeatSec!, outBar, outFirst, idealOutFirst + outBar, bars).reverse(),
+      outBuffer,
+      out.vocals ?? [],
+      sung.out ?? null,
+      out.beatIntervalSec,
+    );
   if (outPick === null) return null;
 
   // incoming: the earliest instrumental loop in its opening

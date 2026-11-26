@@ -41,7 +41,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * above it are skipped.
  */
 fun AudioQuality.permits(kind: SourceKind): Boolean = when (this) {
-    AudioQuality.LOSSLESS -> true
+    AudioQuality.HI_RES_LOSSLESS, AudioQuality.LOSSLESS -> true
     // No lossless answer is wanted here, and a source that can serve one is
     // the slow half of the list: an addon fronting several catalogues walks
     // all of them before it answers, which is seconds spent to land on a
@@ -121,8 +121,15 @@ enum class DownloadQuality(
     LOSSLESS(
         Int.MAX_VALUE,
         "Lossless",
-        "Bit-exact if a source has it, best Opus if not",
+        "CD quality 16-bit/44.1 kHz if a source has it",
         "~35 MB",
+        true,
+    ),
+    HI_RES_LOSSLESS(
+        Int.MAX_VALUE,
+        "Hi-Res Lossless",
+        "Up to 24-bit/192 kHz bit-exact if a source has it",
+        "~95 MB",
         true,
     ),
 }
@@ -204,7 +211,7 @@ object AppSettings {
      * default to Lossless; the mobile plan is the user's to budget, not ours
      * to assume.
      */
-    val audioQualityWifi = MutableStateFlow(AudioQuality.LOSSLESS)
+    val audioQualityWifi = MutableStateFlow(AudioQuality.HI_RES_LOSSLESS)
     val audioQualityCellular = MutableStateFlow(AudioQuality.LOSSLESS)
 
     /** Allowed duration difference when replacing a playing stream with one from a source. */

@@ -21,6 +21,12 @@ import {
   type QueueSource,
 } from '@/playback/queue/timeline';
 import { trackLog } from '@/playback/trackLog';
+import {
+  DEFAULT_AUDIO_QUALITY,
+  isDolbyCodec,
+  type AudioQualityTier,
+} from '@/playback/audioQuality';
+import { calculateSleepFadeVolume, useSleepTimer } from '@/playback/sleepTimer';
 import type { LoadedTrack, StreamStats, YouTubeEngine } from '@/playback/youtube/engine';
 import type { AutomixGraph, AutoDJSnapshot } from '@/playback/automix';
 
@@ -57,6 +63,12 @@ interface Settings {
   automixBars: number;
   /** Stats for nerds: the stream's codec, bitrate and sample rate, and what Automix is doing, under the artist. */
   showNerdStats: boolean;
+  /** Maximum streaming quality tier (from Low up to Hi-Res Lossless). */
+  audioQuality: AudioQualityTier;
+  /** Prefer E-AC-3 / AC-3 Dolby Atmos renditions when the browser and track support them. */
+  dolbyAtmos: boolean;
+  /** Binaural Web Audio spatial widening + crossfeed DSP (automatically paused during native Atmos). */
+  spatialAudio: boolean;
 }
 
 interface PlayerState extends Settings {
@@ -102,6 +114,9 @@ interface PlayerState extends Settings {
   setAutomix: (on: boolean) => void;
   setAutomixBars: (bars: number) => void;
   setShowNerdStats: (on: boolean) => void;
+  setAudioQuality: (quality: AudioQualityTier) => void;
+  setDolbyAtmos: (on: boolean) => void;
+  setSpatialAudio: (on: boolean) => void;
 }
 
 // ---- Settings, kept across visits ---------------------------------------------------
@@ -114,24 +129,67 @@ const DEFAULT_SETTINGS: Settings = {
   volume: 1,
   muted: false,
   crossfadeSec: 0,
-  automix: false,
-  automixBars: 16,
+  automix: true,
+  automixBars: 8,
   showNerdStats: false,
+  audioQuality: DEFAULT_AUDIO_QUALITY,
+  dolbyAtmos: true,
+  spatialAudio: false,
 };
 
 function loadSettings(): Settings {
   try {
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as Partial<Settings>) };
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as Partial<Settings>;
+    return {
+      shuffle: typeof raw.shuffle === 'boolean' ? raw.shuffle : DEFAULT_SETTINGS.shuffle,
+      repeat: raw.repeat === 'all' || raw.repeat === 'one' || raw.repeat === 'off' ? raw.repeat : DEFAULT_SETTINGS.repeat,
+      autoplay: typeof raw.autoplay === 'boolean' ? raw.autoplay : DEFAULT_SETTINGS.autoplay,
+      volume: typeof raw.volume === 'number' && Number.isFinite(raw.volume) ? raw.volume : DEFAULT_SETTINGS.volume,
+      muted: typeof raw.muted === 'boolean' ? raw.muted : DEFAULT_SETTINGS.muted,
+      crossfadeSec: typeof raw.crossfadeSec === 'number' && Number.isFinite(raw.crossfadeSec) ? raw.crossfadeSec : DEFAULT_SETTINGS.crossfadeSec,
+      automix: typeof raw.automix === 'boolean' ? raw.automix : DEFAULT_SETTINGS.automix,
+      automixBars: typeof raw.automixBars === 'number' && Number.isFinite(raw.automixBars) ? raw.automixBars : DEFAULT_SETTINGS.automixBars,
+      showNerdStats: typeof raw.showNerdStats === 'boolean' ? raw.showNerdStats : DEFAULT_SETTINGS.showNerdStats,
+      audioQuality: raw.audioQuality ?? DEFAULT_SETTINGS.audioQuality,
+      dolbyAtmos: typeof raw.dolbyAtmos === 'boolean' ? raw.dolbyAtmos : DEFAULT_SETTINGS.dolbyAtmos,
+      spatialAudio: typeof raw.spatialAudio === 'boolean' ? raw.spatialAudio : DEFAULT_SETTINGS.spatialAudio,
+    };
   } catch {
     return DEFAULT_SETTINGS;
   }
 }
 
 function saveSettings(state: Settings) {
-  const { shuffle, repeat, autoplay, volume, muted, crossfadeSec, automix, automixBars, showNerdStats } = state;
+  const {
+    shuffle,
+    repeat,
+    autoplay,
+    volume,
+    muted,
+    crossfadeSec,
+    automix,
+    automixBars,
+    showNerdStats,
+    audioQuality,
+    dolbyAtmos,
+    spatialAudio,
+  } = state;
   localStorage.setItem(
     SETTINGS_KEY,
-    JSON.stringify({ shuffle, repeat, autoplay, volume, muted, crossfadeSec, automix, automixBars, showNerdStats }),
+    JSON.stringify({
+      shuffle,
+      repeat,
+      autoplay,
+      volume,
+      muted,
+      crossfadeSec,
+      automix,
+      automixBars,
+      showNerdStats,
+      audioQuality,
+      dolbyAtmos,
+      spatialAudio,
+    }),
   );
 }
 
@@ -147,6 +205,7 @@ interface Deck {
 let decks: Deck[] | null = null;
 let decksPromise: Promise<Deck[]> | null = null;
 let active = 0;
+let sleepFadeMultiplier = 1;
 
 /** The audio element in front, if playback has started at least once. */
 export function getAudio(): HTMLAudioElement | null {
@@ -161,10 +220,13 @@ export function getAudio(): HTMLAudioElement | null {
  */
 export function getPlayhead(): { sec: number; paused: boolean } | null {
   const audio = getAudio();
-  const { mixing, nowPlaying } = usePlayer.getState();
+  const { mixing, status, nowPlaying } = usePlayer.getState();
   if (mixing && graph && nowPlaying) {
     const sec = graph.dj.mixPlayhead(nowPlaying.videoId);
     if (sec !== null) return { sec, paused: false };
+  }
+  if (status === 'loading' && !mixing) {
+    return { sec: 0, paused: true };
   }
   return audio ? { sec: audio.currentTime, paused: audio.paused } : null;
 }
@@ -186,6 +248,8 @@ function getDecks(): Promise<Deck[]> {
       // is fetched with CORS (prompt §6, the Web Audio caveat).
       audio.crossOrigin = 'anonymous';
       const engine = new YouTubeEngine(audio);
+      const { audioQuality, dolbyAtmos } = usePlayer.getState();
+      engine.setAudioPreferences({ audioQuality, dolbyAtmos });
       const deck: Deck = { engine, audio, gain: 1 };
       engine.onFatal = (videoId, message) => {
         if (decks?.[active] !== deck) return;
@@ -213,7 +277,8 @@ function getDecks(): Promise<Deck[]> {
 
 function applyVolumes() {
   const { volume, muted } = usePlayer.getState();
-  const level = muted ? 0 : Math.min(1, Math.max(0, volume));
+  const base = muted ? 0 : Math.min(1, Math.max(0, volume));
+  const level = base * sleepFadeMultiplier;
   if (graph) {
     // Routed through Web Audio: the elements stay at 1 and the graph carries volume and the fade.
     const now = graph.ctx.currentTime;
@@ -258,6 +323,7 @@ function ensureAutomix(): Promise<AutomixGraph | null> {
           return entry && status === 'playing' ? queued(entry) : null;
         },
         next: () => {
+          if (useSleepTimer.getState().afterTrack) return null;
           const plan = planNext(true);
           return plan?.kind === 'index' ? queued(plan.queue[plan.index]!) : null;
         },
@@ -352,8 +418,25 @@ function automixHandoff() {
   intent();
 }
 
+function syncSpatialAudio() {
+  const { spatialAudio, nowPlaying } = usePlayer.getState();
+  const nativeAtmos = isDolbyCodec(nowPlaying?.stream?.codec, nowPlaying?.stream?.channels);
+  const wantSpatial = spatialAudio && !nativeAtmos;
+  if (wantSpatial && decks && !graph) {
+    void ensureAutomix().then((g) => {
+      if (!g) return;
+      const latest = usePlayer.getState();
+      const atmos = isDolbyCodec(latest.nowPlaying?.stream?.codec, latest.nowPlaying?.stream?.channels);
+      g.spatial.setEnabled(latest.spatialAudio && !atmos);
+    });
+    return;
+  }
+  graph?.spatial.setEnabled(wantSpatial);
+}
+
 /** Starts or stops the mix loop to match the setting; the first start builds the graph. */
 function syncAutomix() {
+  syncSpatialAudio();
   if (!usePlayer.getState().automix) {
     graph?.dj.stop();
     return;
@@ -419,6 +502,7 @@ let canonical: Map<string, number> | null = null;
 
 export const usePlayer = create<PlayerState>()((set, get) => ({
   ...loadSettings(),
+  videoModeBusy: false,
   queue: [],
   index: -1,
   nowPlaying: null,
@@ -636,6 +720,26 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
     set({ showNerdStats });
     saveSettings(get());
   },
+
+  setAudioQuality(audioQuality) {
+    set({ audioQuality });
+    saveSettings(get());
+    const { dolbyAtmos } = get();
+    for (const d of decks ?? []) d.engine.setAudioPreferences({ audioQuality, dolbyAtmos });
+  },
+
+  setDolbyAtmos(dolbyAtmos) {
+    set({ dolbyAtmos });
+    saveSettings(get());
+    const { audioQuality } = get();
+    for (const d of decks ?? []) d.engine.setAudioPreferences({ audioQuality, dolbyAtmos });
+  },
+
+  setSpatialAudio(spatialAudio) {
+    set({ spatialAudio });
+    saveSettings(get());
+    syncSpatialAudio();
+  },
 }));
 
 // For browser-driven tests, next to __nikoMusicAudio.
@@ -669,10 +773,51 @@ function insertUser(tracks: Track[], source: QueueSource | null, isNext: boolean
 /** Loads queue[at] into the deck in front and plays it. `auto` marks a move the player made on its own. */
 async function startAt(at: number, { startSec = 0, auto = false, autoplay = true } = {}): Promise<void> {
   const state = usePlayer.getState();
-  const entry = state.queue[at];
+  const prevEntry = state.queue[state.index];
+  const prevElapsed = getAudio()?.currentTime ?? 0;
+  if (!auto && prevEntry && prevElapsed >= 25 && state.queue[at]?.entryId !== prevEntry.entryId) {
+    const moodId = prevEntry.source?.id?.startsWith('mood:') ? prevEntry.source.id.slice(5) : null;
+    void import('@/data/music/tasteProfile').then((m) =>
+      m.recordTrackPlay({
+        videoId: prevEntry.track.videoId,
+        title: prevEntry.track.title,
+        artist: prevEntry.track.artists.map((a) => a.name).join(', '),
+        playedSec: prevElapsed,
+        durationSec: prevEntry.track.durationSec,
+        completed: false,
+        moodId,
+      }),
+    );
+  }
+  let entry = state.queue[at];
   if (!entry) return;
   cancelCrossfade();
   const token = ++loadToken;
+
+  // Upgrade third-party fan/lyric uploads (e.g. 7clouds) and music-video cuts to their official catalogue song
+  // so audio playback, crisp square artwork, and synced lyrics metadata stay accurate.
+  if (startSec === 0) {
+    try {
+      const { isKnownVideoCut, isThirdPartyUpload, resolveTrackModeVersion } = await import('@/data/music/api');
+      if (isThirdPartyUpload(entry.track) || isKnownVideoCut(entry.track.videoId)) {
+        const cleanSong = await Promise.race([
+          resolveTrackModeVersion(entry.track, 'audio'),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (token !== loadToken) return;
+        if (cleanSong && cleanSong.videoId !== entry.track.videoId) {
+          const updatedQueue = [...usePlayer.getState().queue];
+          if (updatedQueue[at]?.entryId === entry.entryId) {
+            entry = { ...entry, track: cleanSong };
+            updatedQueue[at] = entry;
+            usePlayer.setState({ queue: updatedQueue });
+          }
+        }
+      }
+    } catch {
+      // Fall back to starting original track
+    }
+  }
 
   if (!extensionReady()) {
     usePlayer.setState({
@@ -733,6 +878,51 @@ function planNext(auto: boolean): NextPlan | null {
 }
 
 async function advance(auto: boolean): Promise<void> {
+  const stateBefore = usePlayer.getState();
+  const outgoing = stateBefore.queue[stateBefore.index];
+  const outgoingAudio = getAudio();
+  const outgoingSec = outgoingAudio?.currentTime ?? 0;
+  if (outgoing && stateBefore.status !== 'error') {
+    const moodId = outgoing.source?.id?.startsWith('mood:') ? outgoing.source.id.slice(5) : null;
+    const artist = outgoing.track.artists.map((a) => a.name).join(', ');
+    if (auto) {
+      void import('@/data/music/tasteProfile').then((m) =>
+        m.recordTrackPlay({
+          videoId: outgoing.track.videoId,
+          title: outgoing.track.title,
+          artist,
+          playedSec: Math.max(outgoingSec, outgoing.track.durationSec ?? 120),
+          durationSec: outgoing.track.durationSec,
+          completed: true,
+          moodId,
+        }),
+      );
+    } else if (outgoingSec >= 1) {
+      void import('@/data/music/tasteProfile').then((m) => {
+        if (outgoingSec >= 25) {
+          m.recordTrackPlay({
+            videoId: outgoing.track.videoId,
+            title: outgoing.track.title,
+            artist,
+            playedSec: outgoingSec,
+            durationSec: outgoing.track.durationSec,
+            completed: false,
+            moodId,
+          });
+        } else {
+          m.recordTrackSkip({
+            videoId: outgoing.track.videoId,
+            title: outgoing.track.title,
+            artist,
+            playedSec: outgoingSec,
+            durationSec: outgoing.track.durationSec,
+            moodId,
+          });
+        }
+      });
+    }
+  }
+
   let plan = planNext(auto);
   if (!plan && usePlayer.getState().autoplay) {
     await refillAutoplay(true);
@@ -810,14 +1000,34 @@ function refillAutoplay(force = false, anySeed = false): Promise<void> {
   refilling ??= (async () => {
     try {
       const { fetchRadio } = await import('@/data/music/api');
-      const { candidates, seedIsVideo } = await fetchRadio(seed.videoId);
+      const { candidates } = await fetchRadio(seed.videoId);
       const current = usePlayer.getState();
-      const extra = extendStation(
+      const [{ enhanceAutoplayTracks, moodById }, { getTasteProfile }, { getCachedTasteDiscoveries }] = await Promise.all([
+        import('@/data/music/recommendations'),
+        import('@/data/music/tasteProfile'),
+        import('@/data/music/aiRecommender'),
+      ]);
+      const sourceEntry = current.queue[current.index]?.source;
+      const moodId = sourceEntry?.id?.startsWith('mood:') ? sourceEntry.id.slice(5) : null;
+      const activeMood = moodId ? moodById(moodId as import('@/data/music/recommendations').MoodId) : null;
+      const matchedFormat = candidates.filter((c) => !c.isVideo);
+      const tastePicks = activeMood ? [] : getCachedTasteDiscoveries().slice(0, 8);
+      const radioTracks = (matchedFormat.length ? matchedFormat : candidates).map((c) => c.track);
+      const rankedExtra = enhanceAutoplayTracks(
         current.queue.map((e) => e.track),
-        candidates,
+        [...radioTracks, ...tastePicks],
+        getTasteProfile(),
         needed,
-        seedIsVideo,
+        activeMood,
       );
+      const extra = rankedExtra.length
+        ? rankedExtra
+        : extendStation(
+            current.queue.map((e) => e.track),
+            candidates,
+            needed,
+            false,
+          );
       if (!extra.length) {
         exhaustedSeeds.add(seed.videoId);
         return;
@@ -899,6 +1109,7 @@ function cancelCrossfade() {
 function maybeCrossfade() {
   const state = usePlayer.getState();
   if (!decks || fade || state.automix || !state.crossfadeSec || state.status !== 'playing') return;
+  if (useSleepTimer.getState().afterTrack) return;
   const front = decks[active]!;
   const remaining = front.audio.duration - front.audio.currentTime;
   if (!Number.isFinite(remaining) || remaining > state.crossfadeSec || remaining < 1) return;
@@ -972,14 +1183,7 @@ function applyTrack(track: LoadedTrack, from?: Track) {
   };
   usePlayer.setState({ nowPlaying, error: null });
   updateMediaSession(nowPlaying);
-  followVideo();
-}
-
-/** A music video's picture follows the deck in front (playback/youtube/videoDeck.ts, loaded with the engine). */
-function followVideo() {
-  const deck = decks?.[active];
-  if (!deck) return;
-  void import('@/playback/youtube/videoDeck').then((m) => m.followVideo(deck.engine, deck.audio));
+  syncSpatialAudio();
 }
 
 const endedListeners = new Set<() => void>();
@@ -1006,6 +1210,12 @@ function bindElement(deck: Deck, n: number) {
   element.addEventListener('ended', () => {
     if (!inFront() || holding) return;
     endedListeners.forEach((listener) => listener());
+    if (useSleepTimer.getState().afterTrack) {
+      cancelCrossfade();
+      useSleepTimer.getState().cancel();
+      usePlayer.setState({ status: 'paused' });
+      return;
+    }
     // The track ran out before the crossfade's next one could start: give up
     // on the fade and play the next track here. Waiting on it was silence for
     // as long as that load took, which on a slow or failing load (each client
@@ -1127,3 +1337,61 @@ export const partyPlayer = {
     usePlayer.setState({ queue: [...queue.slice(0, index + 1), ...tracks.map((t, i) => asEntry(t, tiers[i] ?? 'user', PARTY_SOURCE))] });
   },
 };
+
+// ---- Sleep Timer integration ---------------------------------------------------------
+
+let sleepInterval: ReturnType<typeof setInterval> | null = null;
+
+function pauseFromSleepTimer() {
+  cancelCrossfade();
+  const audio = getAudio();
+  if (audio && !audio.paused) audio.pause();
+  sleepFadeMultiplier = 1;
+  applyVolumes();
+  usePlayer.setState({ status: 'paused' });
+  useSleepTimer.getState().cancel();
+}
+
+function syncSleepTimerLoop() {
+  const { deadlineMs, afterTrack, fadeOut } = useSleepTimer.getState();
+  if (afterTrack && decks && (graph?.dj.mixing || fade?.pending)) {
+    cancelCrossfade();
+  }
+  if (deadlineMs === null) {
+    if (sleepInterval !== null) {
+      clearInterval(sleepInterval);
+      sleepInterval = null;
+    }
+    if (sleepFadeMultiplier !== 1) {
+      sleepFadeMultiplier = 1;
+      applyVolumes();
+    }
+    return;
+  }
+  const tick = () => {
+    const st = useSleepTimer.getState();
+    if (st.deadlineMs === null) {
+      syncSleepTimerLoop();
+      return;
+    }
+    const remaining = st.deadlineMs - Date.now();
+    if (remaining <= 0) {
+      pauseFromSleepTimer();
+      return;
+    }
+    const nextMul = calculateSleepFadeVolume(remaining, st.fadeOut);
+    if (Math.abs(nextMul - sleepFadeMultiplier) > 0.005) {
+      sleepFadeMultiplier = nextMul;
+      applyVolumes();
+    }
+  };
+  tick();
+  if (sleepInterval === null && typeof window !== 'undefined') {
+    sleepInterval = setInterval(tick, 250);
+  }
+  void fadeOut;
+}
+
+if (typeof window !== 'undefined') {
+  useSleepTimer.subscribe(syncSleepTimerLoop);
+}

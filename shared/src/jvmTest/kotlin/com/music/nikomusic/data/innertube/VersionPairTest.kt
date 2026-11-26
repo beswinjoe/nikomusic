@@ -119,4 +119,10 @@ class VersionPairTest {
         assertEquals(120_000L, map.map(200_000L))    // outro
         assertEquals(120_000L, map.inverted().map(90_000L))
     }
+
+    @Test
+    fun ugcAndThirdPartyUploadsAreRejectedForVideoMode() {
+        val ugc = panel("ugc1", "Song (Lyrics)", "MUSIC_VIDEO_TYPE_UGC", "7clouds • 20M views")
+        assertNull(InnertubeParser.parseVersionPair(wrapper(audio, ugc), "atv1", wantAudio = false))
+    }
 }

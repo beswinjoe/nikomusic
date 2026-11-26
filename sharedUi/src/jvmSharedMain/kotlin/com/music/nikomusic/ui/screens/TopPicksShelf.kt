@@ -889,6 +889,11 @@ private fun TopPickMood.style(): MoodStyle = when (this) {
     TopPickMood.FOCUS -> MoodStyle(Color(0xFFF28400), Color(0xFFFFD6A4), 3_600, Color(0xFFFFE2B8))
     TopPickMood.HEARTBREAK -> MoodStyle(Color(0xFFEA3520), Color(0xFFFFA690), 2_700, Color(0xFFFFC9BC))
     TopPickMood.LOVE -> MoodStyle(Color(0xFFF34CA0), Color(0xFFFFB8DC), 1_700, Color(0xFFFFD0EA))
+    TopPickMood.SAD -> MoodStyle(Color(0xFF2846B8), Color(0xFF78C9FF), 3_800, Color(0xFFB4E2FF))
+    TopPickMood.HAPPY -> MoodStyle(Color(0xFFF4AD0A), Color(0xFFFFEA9E), 3_600, Color(0xFFFFF48C))
+    TopPickMood.LATE_NIGHT -> MoodStyle(Color(0xFF2D1C6E), Color(0xFFB5A4FF), 5_200, Color(0xFFD5CAFF))
+    TopPickMood.ROAD_TRIP -> MoodStyle(Color(0xFF158C68), Color(0xFFA6F2D4), 2_500, Color(0xFFC8FAE6))
+    TopPickMood.NOSTALGIA -> MoodStyle(Color(0xFFB8522E), Color(0xFFFFCCA8), 4_600, Color(0xFFFFDFC4))
     TopPickMood.AFTER_HOURS -> MoodStyle(Color(0xFF3A1F78), Color(0xFFC9B6FF), 4_500)
     TopPickMood.ALONE_TIME -> MoodStyle(Color(0xFF2C6E8C), Color(0xFFA9E2F5), 4_000)
     TopPickMood.CHILL -> MoodStyle(Color(0xFF138A86), Color(0xFFA6F0E6), 5_000)
@@ -920,6 +925,11 @@ internal fun TopPickMood.titleRes() = when (this) {
     TopPickMood.FOCUS -> Res.string.mood_focus
     TopPickMood.HEARTBREAK -> Res.string.mood_heartbreak
     TopPickMood.LOVE -> Res.string.mood_love
+    TopPickMood.SAD -> Res.string.mood_sad
+    TopPickMood.HAPPY -> Res.string.mood_happy
+    TopPickMood.LATE_NIGHT -> Res.string.mood_late_night
+    TopPickMood.ROAD_TRIP -> Res.string.mood_road_trip
+    TopPickMood.NOSTALGIA -> Res.string.mood_nostalgia
     TopPickMood.AFTER_HOURS -> Res.string.mood_after_hours
     TopPickMood.ALONE_TIME -> Res.string.mood_alone_time
     TopPickMood.CHILL -> Res.string.mood_chill
@@ -951,6 +961,11 @@ private fun TopPickMood.lineRes() = when (this) {
     TopPickMood.FOCUS -> Res.string.mood_focus_line
     TopPickMood.HEARTBREAK -> Res.string.mood_heartbreak_line
     TopPickMood.LOVE -> Res.string.mood_love_line
+    TopPickMood.SAD -> Res.string.mood_sad_line
+    TopPickMood.HAPPY -> Res.string.mood_happy_line
+    TopPickMood.LATE_NIGHT -> Res.string.mood_late_night_line
+    TopPickMood.ROAD_TRIP -> Res.string.mood_road_trip_line
+    TopPickMood.NOSTALGIA -> Res.string.mood_nostalgia_line
     TopPickMood.AFTER_HOURS -> Res.string.mood_after_hours_line
     TopPickMood.ALONE_TIME -> Res.string.mood_alone_time_line
     TopPickMood.CHILL -> Res.string.mood_chill_line
@@ -1172,6 +1187,96 @@ private fun DrawScope.drawEmblem(
             }
             val beat = 1f + 0.07f * (bump(0.15f) + 0.7f * bump(0.38f))
             scale(beat, beat, f.center) { drawPath(path, color, style = stroke) }
+        }
+        TopPickMood.SAD -> {
+            // Dashed heart slowly pulsing with falling raindrops.
+            val path = cache.outline(size) { heart(it, f) }
+            val dash = side * 0.08f
+            val gap = side * 0.055f
+            drawPath(
+                path,
+                color,
+                style = Stroke(
+                    width = stroke.width,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(dash, gap), -phase * (dash + gap) * 2f),
+                ),
+            )
+            listOf(0.36f, 0.5f, 0.64f).forEachIndexed { idx, x ->
+                val drop = (phase + idx * 0.33f) % 1f
+                val y = 0.72f + 0.24f * drop
+                drawLine(
+                    color.copy(alpha = sin(PI.toFloat() * drop) * 0.75f),
+                    f.at(x, y),
+                    f.at(x - 0.02f, (y + 0.07f).coerceAtMost(0.98f)),
+                    stroke.width * 0.85f,
+                    StrokeCap.Round,
+                )
+            }
+        }
+        TopPickMood.HAPPY -> {
+            // Radiant sun core with rotating joyful rays.
+            val pulse = 0.92f + 0.08f * (0.5f + 0.5f * cos(TAU * phase))
+            scale(pulse, pulse, f.center) {
+                drawCircle(color, radius = side * 0.23f, center = f.center, style = stroke)
+            }
+            rotate(phase * 45f, f.center) {
+                for (k in 0 until 8) {
+                    val angle = k * TAU / 8f
+                    drawLine(
+                        color,
+                        Offset(f.center.x + side * 0.32f * cos(angle), f.center.y + side * 0.32f * sin(angle)),
+                        Offset(f.center.x + side * 0.45f * cos(angle), f.center.y + side * 0.45f * sin(angle)),
+                        stroke.width,
+                        StrokeCap.Round,
+                    )
+                }
+            }
+        }
+        TopPickMood.LATE_NIGHT -> {
+            // Crescent moon paired with slow drifting midnight rain mist.
+            drawPath(cache.outline(size) { crescent(it, f, 0.42f, 0.48f, 0.32f) }, color, style = stroke)
+            listOf(Triple(0.76f, 0.24f, 0.06f), Triple(0.84f, 0.56f, 0.045f)).forEachIndexed { index, (x, y, r) ->
+                val twinkle = 0.3f + 0.7f * (0.5f + 0.5f * wave(phase, index * 0.4f))
+                sparkle(path, f.at(x, y), side * r)
+                drawPath(path, color.copy(alpha = twinkle), style = stroke)
+            }
+            listOf(0.28f, 0.56f, 0.78f).forEachIndexed { idx, x ->
+                val u = (phase + idx * 0.31f) % 1f
+                drawLine(
+                    color.copy(alpha = 0.45f * sin(PI.toFloat() * u)),
+                    f.at(x, 0.14f + 0.65f * u),
+                    f.at(x - 0.03f, 0.22f + 0.65f * u),
+                    stroke.width * 0.75f,
+                    StrokeCap.Round,
+                )
+            }
+        }
+        TopPickMood.ROAD_TRIP -> {
+            // Open highway rushing toward the horizon under a distant sun.
+            drawLine(color, f.at(0.06f, 0.95f), f.at(0.43f, 0.24f), stroke.width, StrokeCap.Round)
+            drawLine(color, f.at(0.94f, 0.95f), f.at(0.57f, 0.24f), stroke.width, StrokeCap.Round)
+            drawLine(color, f.at(0.12f, 0.24f), f.at(0.88f, 0.24f), stroke.width, StrokeCap.Round)
+            for (k in 0 until 5) {
+                val u = (k / 5f + phase) % 1f
+                val y0 = 0.28f + 0.67f * u * u
+                val y1 = (y0 + 0.02f + 0.08f * u).coerceAtMost(0.95f)
+                drawLine(color.copy(alpha = edgeFade(u)), f.at(0.5f, y0), f.at(0.5f, y1), stroke.width, StrokeCap.Round)
+            }
+        }
+        TopPickMood.NOSTALGIA -> {
+            // Analog vinyl record slowly spinning with warm nostalgic glint.
+            drawCircle(color, radius = side * 0.44f, center = f.center, style = stroke)
+            drawCircle(color, radius = side * 0.15f, center = f.center, style = stroke)
+            drawCircle(color, radius = side * 0.025f, center = f.center)
+            rotate(-phase * 180f, f.center) {
+                listOf(0.35f, 0.26f).forEach { r ->
+                    val box = Rect(f.center, side * r)
+                    drawArc(color.copy(alpha = 0.75f), 210f, 65f, false, box.topLeft, box.size, style = stroke)
+                    drawArc(color.copy(alpha = 0.75f), 30f, 65f, false, box.topLeft, box.size, style = stroke)
+                }
+            }
         }
         TopPickMood.AFTER_HOURS -> {
             drawPath(cache.outline(size) { crescent(it, f, 0.42f, 0.52f, 0.34f) }, color, style = stroke)
@@ -1567,7 +1672,7 @@ internal fun FindYourMoodShelf(onClick: (TopPickMood, String) -> Unit, onShowAll
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             state = rowState,
         ) {
-            items(TopPickMood.entries.filter { it.isCoreMood }, key = { it.name }) { mood ->
+            items(TopPickMood.CORE_MOODS, key = { it.name }) { mood ->
                 MoodTile(mood, onClick, Modifier.width(SHELF_CARD_WIDTH))
             }
         }

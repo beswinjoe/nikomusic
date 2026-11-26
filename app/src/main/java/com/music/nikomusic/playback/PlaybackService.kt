@@ -713,6 +713,9 @@ class PlaybackService : MediaLibraryService() {
     /** Last sampled position of the playing track, in seconds. */
     private var lastPositionSeconds = 0L
 
+    /** Last queue index from which a media transition occurred, to tell forward skips from Previous. */
+    private var lastTransitionIndex = -1
+
     /** When the current track was chosen, for the time-to-first-audio log. */
     private var trackSelectedAt: Long? = null
 
@@ -4432,6 +4435,7 @@ class PlaybackService : MediaLibraryService() {
 
         // currentPosition already belongs to the new item by now, so
         // the outgoing track is closed out on the last sampled value.
+        val exitedPositionSeconds = lastPositionSeconds
         PlaybackTracker.onTrackChanged(lastPositionSeconds)
         lastPositionSeconds = 0
 
@@ -4456,6 +4460,22 @@ class PlaybackService : MediaLibraryService() {
         val ended = previousEnded
         val prevSong = listenBrainzSong
         val prevStart = listenBrainzStartMs
+        val currentIdx = exoPlayer.currentMediaItemIndex
+        val forwardOrJump = lastTransitionIndex < 0 || currentIdx >= lastTransitionIndex
+        if (!ended &&
+            reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK &&
+            prevSong != null &&
+            prevSong.videoId != newSong?.videoId &&
+            !isQueueUndoRestoring(exoPlayer) &&
+            forwardOrJump &&
+            exitedPositionSeconds in 1L until 30L
+        ) {
+            val playedMs = exitedPositionSeconds * 1000L
+            val prevDurMs = listenBrainzDurationMs ?: 0L
+            com.music.nikomusic.data.stats.ListeningStats.recordSkip(prevSong, playedMs, prevDurMs)
+            com.music.nikomusic.data.TopPicks.noteTrackSkipped(prevSong.videoId)
+        }
+        lastTransitionIndex = currentIdx
         if (prevSong != null && ended && prevStart > 0L) {
             submitListenBrainzFinished(prevSong, prevStart, listenBrainzDurationMs)
         }

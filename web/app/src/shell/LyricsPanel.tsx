@@ -19,6 +19,7 @@ type AmLyricsElement = HTMLElement & {
   ttml?: string;
   interpolate: boolean;
   autoScroll: boolean;
+  isUserScrolling?: boolean;
   highlightColor: string;
   fontFamily?: string;
   updateComplete?: Promise<unknown>;
@@ -98,6 +99,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
   const element = useRef<AmLyricsElement | null>(null);
   const deck = usePlayer((s) => s.deck);
   const mixing = usePlayer((s) => s.mixing);
+  const status = usePlayer((s) => s.status);
   const videoId = usePlayer((s) => s.nowPlaying?.videoId);
 
   // Created by hand, with its TTML set before it's attached: am-lyrics starts
@@ -111,7 +113,10 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     el.autoScroll = true;
     el.highlightColor = '#ffffff';
     el.fontFamily = LYRIC_FONT;
+    const initialPlayhead = getPlayhead();
+    if (initialPlayhead) el.currentTime = Math.trunc(initialPlayhead.sec * 1000);
     el.className = 'block min-h-0 flex-1 overflow-hidden [--am-lyrics-highlight-color:#fff]';
+    el.isUserScrolling = false;
     el.toggleAttribute('data-full', full);
     const onLineClick = (event: Event) => {
       const timestamp = (event as CustomEvent<{ timestamp: number }>).detail?.timestamp;
@@ -133,6 +138,8 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       // so the toolbar is never under it.
       const scroller = root.querySelector('.lyrics-container');
       const target = host.current;
+      const initial = getPlayhead();
+      if (initial) el.currentTime = Math.trunc(initial.sec * 1000);
       if (!full || !scroller || !target) return;
       const fade = () => target.style.setProperty('--lyrics-top-fade', `${Math.min(scroller.scrollTop, 80)}px`);
       fade();
@@ -176,23 +183,33 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       frame = requestAnimationFrame(tick);
       return () => cancelAnimationFrame(frame);
     }
-    const clock = new LyricClock(audio.currentTime * 1000);
+    const isTrackLoading = usePlayer.getState().status === 'loading';
+    const initialMs = isTrackLoading ? 0 : Math.trunc(audio.currentTime * 1000);
+    const clock = new LyricClock(initialMs);
     let discontinuity = 0;
+    let lastAudioSec = isTrackLoading ? 0 : audio.currentTime;
     let frame = 0;
     const tick = () => {
       const now = performance.now();
+      const sec = usePlayer.getState().status === 'loading' ? 0 : audio.currentTime;
+      if (sec < lastAudioSec - 1.2 || sec > lastAudioSec + 2.5) discontinuity++;
+      lastAudioSec = sec;
       // The reading and its stamp are taken together.
-      el.currentTime = clock.frame(now, Math.trunc(audio.currentTime * 1000), now, discontinuity);
+      el.currentTime = clock.frame(now, Math.trunc(sec * 1000), now, discontinuity);
       frame = requestAnimationFrame(tick);
     };
     const hold = () => {
       cancelAnimationFrame(frame);
-      const ms = audio.currentTime * 1000;
+      const loading = usePlayer.getState().status === 'loading';
+      const sec = loading ? 0 : audio.currentTime;
+      lastAudioSec = sec;
+      const ms = Math.trunc(sec * 1000);
       clock.hold(ms, performance.now());
       el.currentTime = ms;
     };
     const resume = () => {
       cancelAnimationFrame(frame);
+      if (el.isUserScrolling) el.isUserScrolling = false;
       clock.restart();
       frame = requestAnimationFrame(tick);
     };
@@ -200,20 +217,35 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       discontinuity++;
       if (audio.paused) hold();
     };
+    const onMediaReset = () => {
+      discontinuity++;
+      lastAudioSec = audio.currentTime;
+      if (audio.paused) hold();
+      else resume();
+    };
+    const onPlaying = () => resume();
     audio.addEventListener('seeking', onSeeking);
     audio.addEventListener('seeked', onSeeking);
+    audio.addEventListener('loadedmetadata', onMediaReset);
+    audio.addEventListener('loadeddata', onMediaReset);
     audio.addEventListener('pause', hold);
     audio.addEventListener('play', resume);
-    if (audio.paused) hold();
+    audio.addEventListener('playing', onPlaying);
+    audio.addEventListener('canplay', onPlaying);
+    if (audio.paused || isTrackLoading) hold();
     else resume();
     return () => {
       cancelAnimationFrame(frame);
       audio.removeEventListener('seeking', onSeeking);
       audio.removeEventListener('seeked', onSeeking);
+      audio.removeEventListener('loadedmetadata', onMediaReset);
+      audio.removeEventListener('loadeddata', onMediaReset);
       audio.removeEventListener('pause', hold);
       audio.removeEventListener('play', resume);
+      audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('canplay', onPlaying);
     };
-  }, [deck, videoId, ttml, mixing]);
+  }, [deck, videoId, ttml, mixing, status]);
 
   // am-lyrics renders and scrolls itself; it only needs the space. Full screen fades it out at the top and bottom.
   return (
@@ -221,7 +253,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       ref={host}
       className={
         full
-          ? 'flex min-h-0 flex-1 [mask-image:linear-gradient(180deg,transparent,#000_var(--lyrics-top-fade,0px),#000_50%,transparent)]'
+          ? 'flex min-h-0 flex-1 [mask-image:linear-gradient(180deg,transparent,#000_var(--lyrics-top-fade,0px),#000_82%,transparent)]'
           : 'flex min-h-0 flex-1'
       }
     />
@@ -408,7 +440,7 @@ export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' 
           <Loader2 size={20} className="animate-spin" />
         </div>
       ) : result ? (
-        <LyricsView ttml={result.ttml} full={full} />
+        <LyricsView key={`${videoId}:${result.source}:${result.ttml.length}`} ttml={result.ttml} full={full} />
       ) : picked ? (
         <div className={empty}>
           <p className={emptyTitle}>Not on {sourceById(picked)?.label ?? 'this provider'}</p>

@@ -177,10 +177,16 @@ object Genius {
             val artist = item["artist_names"]?.jsonPrimitive?.contentOrNull?.lowercase(Locale.ROOT) ?: ""
             var score = 0
 
-            val titleMatches = normTitle.isNotBlank() && (title == normTitle || title.contains(normTitle) || normTitle.contains(title))
-            val artistMatches = normArtist.isNotBlank() && (artist == normArtist || artist.contains(normArtist) || normArtist.contains(artist))
+            if (normTitle.isBlank()) return@mapNotNull null
+            val titleMatches = lyricsTitleMatches(title, normTitle) || title == normTitle
+            val artistMatches = normArtist.isBlank() ||
+                lyricsArtistMatches(artist, normArtist) ||
+                artist == normArtist
 
-            if (!titleMatches && !artistMatches) return@mapNotNull null
+            if (!titleMatches || !artistMatches) return@mapNotNull null
+            if (!isLyricsVersionCompatible(normTitle, title) || isGeniusNonLyricsText(title, artist)) {
+                return@mapNotNull null
+            }
 
             if (title == normTitle) score += 50
             else if (titleMatches) score += 25

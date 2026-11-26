@@ -12,9 +12,9 @@ export interface TrackTags {
   album?: string;
 }
 
-// NikoMusic: 8 records music videos, 7 widens the vocal mask to the loop searches, 6 adds Beat This! (re-exported), 5 the vocal mask; 3 since the gap-tolerant fitGrid (beatgrid.ts) and the head/tail
+// NikoMusic: 9 fixes intro/outro energy bounds so dynamic songs never chop mid-track; 8 records music videos, 7 widens the vocal mask to the loop searches, 6 adds Beat This! (re-exported), 5 the vocal mask; 3 since the gap-tolerant fitGrid (beatgrid.ts) and the head/tail
 // grids; AutoMix's whole-track grids were mostly unusable on real songs.
-export const ANALYSIS_VERSION = 8;
+export const ANALYSIS_VERSION = 9;
 
 /** NikoMusic: Beat This!'s beats and downbeats over one window, on the track's timeline. */
 export interface BeatSide {

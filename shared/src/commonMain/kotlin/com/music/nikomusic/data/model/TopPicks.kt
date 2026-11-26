@@ -61,10 +61,10 @@ enum class TopPickMood(val params: String, val shelfWords: List<String> = emptyL
     // Find Your Mood
     ENERGY(ENERGIZE),
     RELAX(CHILL_CATEGORY, listOf("unwind", "peaceful", "relaxing", "laidback")),
-    FEELING_BLUE(SAD, listOf("sad", "melanchol", "lonely")),
+    FEELING_BLUE(SAD_CATEGORY, listOf("sad", "melanchol", "lonely")),
     FEEL_GOOD(FEEL_GOOD_CATEGORY),
     FOCUS(FOCUS_CATEGORY),
-    HEARTBREAK(SAD, listOf("heartbreak", "breakup", "break-up", "broken", "heartache")),
+    HEARTBREAK(SAD_CATEGORY, listOf("heartbreak", "breakup", "break-up", "broken", "heartache")),
     LOVE(ROMANCE),
 
     // Moods and Activities
@@ -89,13 +89,32 @@ enum class TopPickMood(val params: String, val shelfWords: List<String> = emptyL
     WEEKEND(PARTY_CATEGORY, listOf("party today", "dance")),
     WELLBEING(CHILL_CATEGORY, listOf("mindfulness", "meditation", "yoga")),
     WORK(FOCUS_CATEGORY, listOf("flow", "instrumental", "reading")),
+    SAD(SAD_CATEGORY, listOf("sad", "heartbreak", "breakup", "melanchol", "lonely", "heartache", "crying")),
+    HAPPY(FEEL_GOOD_CATEGORY, listOf("happy", "feel good", "feel-good", "cheerful", "uplifting", "sunny", "joy")),
+    LATE_NIGHT(CHILL_CATEGORY, listOf("late night", "after hours", "midnight", "dreamy", "atmospheric", "night drive", "nocturnal")),
+    ROAD_TRIP(COMMUTE, listOf("road trip", "driving", "drive", "commute", "highway", "travel", "sing-along")),
+    NOSTALGIA(FEEL_GOOD_CATEGORY, listOf("nostalgia", "nostalgic", "throwback", "classic", "retro", "90s", "2000s", "80s", "oldies")),
     ;
 
-    /** One of Apple's seven "Find Your Mood" stations, rather than an activity. */
-    val isCoreMood: Boolean get() = ordinal <= LOVE.ordinal
+    /** One of Niko's ten curated "Find Your Mood" categories, rather than an activity. */
+    val isCoreMood: Boolean get() = this in CORE_MOODS
 
     companion object {
         const val CATEGORY_BROWSE_ID = "FEmusic_moods_and_genres_category"
+
+        /** Ordered 10 core Mood Discovery categories surfaced on Home. */
+        val CORE_MOODS: List<TopPickMood> = listOf(
+            LOVE,
+            SAD,
+            ENERGY,
+            CHILL,
+            FOCUS,
+            PARTY,
+            HAPPY,
+            LATE_NIGHT,
+            ROAD_TRIP,
+            NOSTALGIA,
+        )
     }
 }
 
@@ -108,7 +127,7 @@ private const val FOCUS_CATEGORY = "ggMPOg1uX0NvNGNhWThMYWRh"
 private const val GAMING_CATEGORY = "ggMPOg1uX3NmUVV4Vzl3WGQ0"
 private const val PARTY_CATEGORY = "ggMPOg1uX0pmQ0s2V0JRclZs"
 private const val ROMANCE = "ggMPOg1uX0FzQ2FhZWtUY211"
-private const val SAD = "ggMPOg1uX0JLQ0gySWZKZVY1"
+private const val SAD_CATEGORY = "ggMPOg1uX0JLQ0gySWZKZVY1"
 private const val SLEEP_CATEGORY = "ggMPOg1uX1MxaFQ3Z0JMZkN4"
 private const val WORKOUT = "ggMPOg1uX09LWkhnTjRGRUJh"
 

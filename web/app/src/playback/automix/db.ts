@@ -20,9 +20,20 @@ function getDb(): Promise<IDBPDatabase<AutomixDB>> {
 }
 
 export async function getAnalysis(videoId: string): Promise<TrackAnalysis | undefined> {
+  if (typeof indexedDB === 'undefined') return undefined;
   return (await getDb()).get('tracks', videoId);
 }
 
+export async function getAllAnalyses(): Promise<TrackAnalysis[]> {
+  if (typeof indexedDB === 'undefined') return [];
+  try {
+    return await (await getDb()).getAll('tracks');
+  } catch {
+    return [];
+  }
+}
+
 export async function putAnalysis(analysis: TrackAnalysis): Promise<void> {
+  if (typeof indexedDB === 'undefined') return;
   await (await getDb()).put('tracks', analysis, analysis.fileKey);
 }

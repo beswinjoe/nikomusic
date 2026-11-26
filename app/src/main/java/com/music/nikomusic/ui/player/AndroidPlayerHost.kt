@@ -139,8 +139,13 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
     override val musicVideoSupported: Boolean get() = true
 
     @Composable
-    override fun MusicVideo(videoId: String, fit: Boolean, onRenderedChanged: (Boolean) -> Unit, modifier: Modifier) =
-        AndroidMusicVideo(videoId, fit, onRenderedChanged, modifier)
+    override fun MusicVideo(
+        videoId: String,
+        fit: Boolean,
+        onRenderedChanged: (Boolean) -> Unit,
+        modifier: Modifier,
+        bottomFade: Float,
+    ) = AndroidMusicVideo(videoId, fit, onRenderedChanged, modifier, bottomFade = bottomFade)
 
     override fun showsMusicVideoPicture(videoId: String): Boolean = MusicOnlyPlayback.showsPicture(videoId)
 

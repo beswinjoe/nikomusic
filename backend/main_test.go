@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"nikomusic/backend/ai"
 	"nikomusic/backend/clock"
 	"nikomusic/backend/config"
 	"nikomusic/backend/presence"
@@ -33,6 +34,7 @@ func setupTestServer() *httptest.Server {
 	mux.HandleFunc("POST /api/presence", handlePresence)
 	mux.HandleFunc("GET /api/stats/live", handleLiveStats)
 	mux.HandleFunc("GET /api/stats/live/badge.svg", handleLiveBadge)
+	mux.HandleFunc("POST /api/ai/recommend", handleAIRecommend)
 	mux.HandleFunc("GET /invite/{code}", handleInviteLanding)
 	mux.HandleFunc("GET /ws/parties/{code}", handleWebSocket)
 
@@ -548,5 +550,30 @@ func TestWebSocketTokenAsSubprotocol(t *testing.T) {
 	bad := websocket.Dialer{Subprotocols: []string{socketProtocol, socketTokenPrefix + "nottherighttoken"}}
 	if _, resp, err := bad.Dial(u.String(), nil); err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for a wrong subprotocol token, got %v", err)
+	}
+}
+
+func TestAIRecommendEndpoint(t *testing.T) {
+	prevRec := aiRecommender
+	aiRecommender = ai.NewRecommender(ai.Config{})
+	defer func() { aiRecommender = prevRec }()
+
+	ts := setupTestServer()
+	defer ts.Close()
+
+	body := `{"mode":"discovery","topTracks":[{"title":"The Wind","artist":"John Michael Howell"}],"likedArtists":["John Michael Howell"]}`
+	res, err := http.Post(ts.URL+"/api/ai/recommend", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/ai/recommend failed: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.StatusCode)
+	}
+	var out ai.RecommendResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if out.Enabled || len(out.Queries) != 0 {
+		t.Fatalf("expected disabled response when server key unset, got %+v", out)
 	}
 }

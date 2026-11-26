@@ -63,7 +63,20 @@ function artistsOf(list: { name: string; channel_id?: string | undefined }[] | u
   return (list ?? []).filter((a) => a.name).map((a) => ({ name: a.name, id: a.channel_id ?? null }));
 }
 
+function stripLibraryPrefix(id: string | undefined): string | undefined {
+  if (!id) return id;
+  if (id.startsWith('MPLAUC') || id.startsWith('MPLAMPRE') || id.startsWith('MPLAVL') || id.startsWith('MPLAPL')) {
+    return id.slice(4);
+  }
+  return id;
+}
+
 function kindOf(itemType: string | undefined, id: string | undefined): ItemKind {
+  // Explicit browse prefixes win over YouTube.js heuristics that misclassify
+  // library albums (`MPREb_` / `FEmusic_library_privately_owned_release`) as 'video' or 'endpoint'.
+  if (id?.startsWith('MPREb_') || id?.startsWith('MPR') || id?.startsWith('FEmusic_library_privately_owned_release')) return 'album';
+  if (id?.startsWith('VL') || id?.startsWith('PL') || id?.startsWith('RDTMAK')) return 'playlist';
+  if (id?.startsWith('UC') || id?.startsWith('FEmusic_library_privately_owned_artist')) return 'artist';
   switch (itemType) {
     case 'song':
       return 'song';
@@ -81,9 +94,6 @@ function kindOf(itemType: string | undefined, id: string | undefined): ItemKind 
     case 'podcast_show':
       return 'podcast';
   }
-  if (id?.startsWith('MPREb_')) return 'album';
-  if (id?.startsWith('VL') || id?.startsWith('PL')) return 'playlist';
-  if (id?.startsWith('UC')) return 'artist';
   return 'unknown';
 }
 
@@ -97,10 +107,9 @@ function subtitleFor(kind: ItemKind, artists: ArtistRef[], album: AlbumRef | nul
 }
 
 export function mapResponsiveItem(node: YTNodes.MusicResponsiveListItem): MusicItem | null {
-  // Library artist rows have no id of their own in YouTube.js, only a link to
-  // MPLAUC…, the library's view of the UC… channel; they open as the artist.
-  const linked = linkOf(node.endpoint)?.browseId;
-  const id = node.id ?? (linked?.startsWith('MPLAUC') ? linked.slice(4) : linked);
+  // Library artist & album rows often carry a MPLA… wrapper browseId; unwrap to UC… / MPREb_….
+  const linked = stripLibraryPrefix(linkOf(node.endpoint)?.browseId);
+  const id = stripLibraryPrefix(node.id) ?? linked;
   if (!id) return null;
   const kind = kindOf(node.item_type, id);
   const artists = artistsOf(node.artists ?? node.authors ?? (node.author ? [node.author] : undefined));
@@ -121,7 +130,10 @@ export function mapResponsiveItem(node: YTNodes.MusicResponsiveListItem): MusicI
 }
 
 export function mapTwoRowItem(node: YTNodes.MusicTwoRowItem): MusicItem | null {
-  const id = node.id ?? linkOf(node.endpoint)?.browseId ?? (node.endpoint?.payload as { videoId?: string })?.videoId;
+  const id =
+    stripLibraryPrefix(node.id) ??
+    stripLibraryPrefix(linkOf(node.endpoint)?.browseId) ??
+    (node.endpoint?.payload as { videoId?: string })?.videoId;
   if (!id) return null;
   const kind = kindOf(node.item_type, id);
   const artists = artistsOf(node.artists ?? (node.author ? [node.author] : undefined));
@@ -133,7 +145,7 @@ export function mapTwoRowItem(node: YTNodes.MusicTwoRowItem): MusicItem | null {
     artists,
     album: null,
     thumbnail: thumbnailOf(node),
-    wide: isWide(node),
+    wide: kind === 'album' || kind === 'playlist' || kind === 'artist' ? false : isWide(node),
     durationSec: null,
     explicit: explicitOf(node.badges),
   };
@@ -167,9 +179,11 @@ export function mapTrack(node: unknown): Track | null {
   };
 }
 
-/** Which layout a shelf of these items gets (report §2). */
-function layoutFor(items: MusicItem[], fromList: boolean): ShelfLayout {
+/** Which layout a shelf of these items gets (report §2). Keep Recents/Recently Played unified regardless of mix between songs and music videos. */
+function layoutFor(items: MusicItem[], fromList: boolean, title = ''): ShelfLayout {
   if (!items.length) return 'square';
+  const trimmed = title.trim().toLowerCase();
+  if (trimmed === 'recents' || trimmed === 'recently played' || trimmed === 'listen again') return 'tracks';
   const first = items[0]!;
   if (fromList && (first.kind === 'song' || first.kind === 'video')) return 'tracks';
   if (items.every((i) => i.kind === 'artist')) return 'circle';
@@ -184,10 +198,11 @@ export function mapShelf(node: unknown): Shelf | null {
     const items = shelf.contents.map(mapItem).filter((i): i is MusicItem => !!i);
     if (!items.length) return null;
     const fromList = shelf.contents[0]?.type === 'MusicResponsiveListItem';
+    const title = text(shelf.header?.title);
     return {
-      title: text(shelf.header?.title),
+      title,
       strapline: text(shelf.header?.strapline) || null,
-      layout: layoutFor(items, fromList),
+      layout: layoutFor(items, fromList, title),
       items,
       seeAll: linkOf(shelf.header?.more_content?.endpoint),
     };
@@ -196,10 +211,11 @@ export function mapShelf(node: unknown): Shelf | null {
     const shelf = n as unknown as YTNodes.MusicShelf;
     const items = shelf.contents.map(mapItem).filter((i): i is MusicItem => !!i);
     if (!items.length) return null;
+    const title = text(shelf.title);
     return {
-      title: text(shelf.title),
+      title,
       strapline: null,
-      layout: layoutFor(items, true),
+      layout: layoutFor(items, true, title),
       items,
       seeAll: linkOf(shelf.endpoint) ?? linkOf(shelf.bottom_button?.endpoint),
     };
@@ -229,32 +245,52 @@ function libraryToggle(header: YTNodes.MusicResponsiveHeader | null | undefined)
   return null;
 }
 
-function headerInfo(header: YTNodes.MusicResponsiveHeader | null | undefined): HeaderInfo {
-  const strapline = header?.strapline_text_one as unknown as { text?: string; runs?: { text: string; endpoint?: unknown }[] } | undefined;
-  const artists: ArtistRef[] = (strapline?.runs ?? [])
-    .filter((run) => run.text.trim() && !/^[•,&]$|^ (•|&) $/.test(run.text.trim()))
-    .map((run) => ({ name: run.text.trim(), id: linkOf(run.endpoint)?.browseId ?? null }))
-    .filter((a) => a.name !== '•' && a.name !== ',' && a.name !== '&');
+function headerInfo(header: YTNodes.MusicResponsiveHeader | YTNodes.MusicDetailHeader | null | undefined): HeaderInfo {
+  const rec = header as unknown as Record<string, unknown> | null | undefined;
+  const strapline = rec?.strapline_text_one as { text?: string; runs?: { text: string; endpoint?: unknown }[] } | undefined;
+  const authorRun = rec?.author as { name?: string; channel_id?: string; endpoint?: unknown } | undefined;
+  const artists: ArtistRef[] = strapline?.runs
+    ? strapline.runs
+        .filter((run) => run.text.trim() && !/^[•,&]$|^ (•|&) $/.test(run.text.trim()))
+        .map((run) => ({ name: run.text.trim(), id: linkOf(run.endpoint)?.browseId ?? null }))
+        .filter((a) => a.name !== '•' && a.name !== ',' && a.name !== '&')
+    : authorRun?.name
+      ? [{ name: authorRun.name, id: authorRun.channel_id ?? linkOf(authorRun.endpoint)?.browseId ?? null }]
+      : [];
+  const descNode = rec?.description as { description?: TextLike } | TextLike | undefined;
+  const descText =
+    descNode && typeof descNode === 'object' && 'description' in descNode
+      ? text(descNode.description as TextLike)
+      : text(descNode as TextLike);
   return {
-    title: text(header?.title),
-    subtitle: text(header?.subtitle),
-    meta: text(header?.second_subtitle),
-    description: text(header?.description?.description as TextLike) || null,
-    thumbnail: thumbnailOf(header ?? {}),
+    title: text(rec?.title as TextLike),
+    subtitle: text(rec?.subtitle as TextLike),
+    meta: text(rec?.second_subtitle as TextLike) || text(rec?.item_count as TextLike),
+    description: descText || null,
+    thumbnail: thumbnailOf((rec as { thumbnail?: unknown }) ?? {}),
     artists,
-    explicit: explicitOf(header?.subtitle_badge),
-    library: libraryToggle(header),
+    explicit: explicitOf(rec?.subtitle_badge ?? rec?.badges),
+    library: libraryToggle(header as YTNodes.MusicResponsiveHeader | null | undefined),
   };
 }
 
+function listParamFromUrl(url: string | undefined | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url, 'https://music.youtube.com').searchParams.get('list');
+  } catch {
+    return null;
+  }
+}
+
 export function mapAlbum(id: string, album: Pick<YTMusic.Album, 'header' | 'contents' | 'sections' | 'url'>): AlbumPage {
-  const listId = album.url ? new URL(album.url).searchParams.get('list') : null;
+  const listId = listParamFromUrl(album.url);
   return {
     id,
-    ...headerInfo(album.header as YTNodes.MusicResponsiveHeader | undefined),
-    tracks: album.contents.map(mapTrack).filter((t): t is Track => !!t),
+    ...headerInfo(album.header as YTNodes.MusicResponsiveHeader | YTNodes.MusicDetailHeader | undefined),
+    tracks: (album.contents ?? []).map(mapTrack).filter((t): t is Track => !!t),
     playlistId: listId,
-    more: mapShelves(album.sections),
+    more: mapShelves(album.sections ?? []),
   };
 }
 

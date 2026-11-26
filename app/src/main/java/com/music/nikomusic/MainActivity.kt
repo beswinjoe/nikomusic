@@ -1832,6 +1832,7 @@ private fun NikoMusicApp(
      * built with.
      */
     val playMood: (TopPickMood, String) -> Unit = { mood, title ->
+        viewModel.noteMoodSelected(mood)
         val hints = topPicks?.firstOrNull { it.kind == TopPickKind.MOOD }?.hints
         openTopPick(
             if (hints != null) TopPicks.moodStation(mood, hints) else TopPicks.moodStation(mood),
@@ -4568,11 +4569,33 @@ private fun NikoMusicApp(
             } else {
                 !song.isVideo && convertedVideoId != song.videoId
             }
-            // Offered for the playing track wherever its menu is opened,
-            // whether or not the other version has been found yet: the
-            // switch looks it up, and says so when there isn't one.
+            val originalVideoAvailable by produceState(
+                initialValue = if (!menuIsAudioVersion || convertedFromVideo != null) {
+                    true
+                } else {
+                    (YtMusicRepository.cachedVideoVersion(song.videoId) != null)
+                        .takeIf { it || YtMusicRepository.isVideoVersionMissing(song.videoId) }
+                },
+                song.videoId,
+                menuIsAudioVersion,
+            ) {
+                if (!menuIsAudioVersion || convertedFromVideo != null) {
+                    value = true
+                    return@produceState
+                }
+                if (song.videoId in missingVersions || YtMusicRepository.isVideoVersionMissing(song.videoId)) {
+                    value = false
+                    return@produceState
+                }
+                val resolved = runCatching { YtMusicRepository.resolveVideo(song) }.getOrNull()
+                value = resolved != null && resolved.videoId != song.videoId
+            }
+            // Offered only when an original Music Video exists for this song (or we are already on one).
+            // Hides the option outright when no official video is available.
             val onToggleVersion: (() -> Unit)? = if (
-                controller?.currentMediaItem?.mediaId == song.videoId
+                controller?.currentMediaItem?.mediaId == song.videoId &&
+                (!menuIsAudioVersion || convertedFromVideo != null || originalVideoAvailable == true) &&
+                song.videoId !in missingVersions
             ) {
                 toggle@{
                     songActions = null

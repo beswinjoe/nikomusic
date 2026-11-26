@@ -13,6 +13,7 @@ import { useYtAuth, ytAuthSnapshot } from '@/extension/useYtAuth';
 import { queryClient } from '@/lib/queryClient';
 import {
   addToPlaylist,
+  createPlaylist,
   fetchAlbum,
   fetchArtist,
   fetchBrowse,
@@ -30,6 +31,7 @@ import {
   setTrackLiked,
   type LikeStatus,
   type Paged,
+  type PlaylistPrivacy,
 } from './api';
 import { isLibrarySection, LIKED_MUSIC_PLAYLIST, type LibrarySection } from './library';
 import type { AlbumPage, BrowseLink, BrowsePage, HeaderInfo, PlaylistPage, Shelf, Track } from './types';
@@ -263,6 +265,28 @@ export function useAddToPlaylist() {
   return useMutation({
     mutationFn: ({ playlistId, videoId }: { playlistId: string; videoId: string }) => addToPlaylist(playlistId, videoId),
     onSettled: (_data, _error, { playlistId }) => {
+      void queryClient.invalidateQueries({ queryKey: ['music', 'playlist', playlistId] });
+      void queryClient.invalidateQueries({ queryKey: ['music', 'playlist', `VL${playlistId.replace(/^VL/, '')}`] });
+    },
+  });
+}
+
+/** Creates a new YouTube Music playlist containing the requested track(s) and refreshes library caches. */
+export function useCreatePlaylist() {
+  return useMutation({
+    mutationFn: ({
+      title,
+      videoIds,
+      privacyStatus = 'PRIVATE',
+    }: {
+      title: string;
+      videoIds: string[];
+      privacyStatus?: PlaylistPrivacy;
+    }) => createPlaylist(title, videoIds, '', privacyStatus),
+    onSuccess: (playlistId) => {
+      void queryClient.invalidateQueries({ queryKey: ['music', 'playlist-options'] });
+      void queryClient.invalidateQueries({ queryKey: ['music', 'library', 'playlists'] });
+      void queryClient.invalidateQueries({ queryKey: ['music', 'library', 'sidebar-playlists'] });
       void queryClient.invalidateQueries({ queryKey: ['music', 'playlist', playlistId] });
       void queryClient.invalidateQueries({ queryKey: ['music', 'playlist', `VL${playlistId.replace(/^VL/, '')}`] });
     },

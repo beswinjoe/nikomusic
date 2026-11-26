@@ -83,7 +83,37 @@ const versionOf = (title: string) =>
       .filter((w) => VERSION_WORDS.has(w)),
   );
 const artistsOf = (artist: string) => new Set(artist.split(ARTIST_SEPARATORS).map(normalized).filter(Boolean));
+const leadArtistOf = (artist: string) => artist.split(ARTIST_SEPARATORS)[0]?.trim() || artist.trim();
 const sameSet = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every((x) => b.has(x));
+
+/** Word/token-aware title matcher so short titles like "Low" never substring-match "Slow"/"Follow". */
+export function titlesMatch(candidateTitle: string, targetTitle: string): boolean {
+  const cCore = coreOf(candidateTitle);
+  const tCore = coreOf(targetTitle);
+  if (!cCore || !tCore) return false;
+  if (cCore === tCore) return true;
+  const cTokens = cCore.split(' ').filter(Boolean);
+  const tTokens = tCore.split(' ').filter(Boolean);
+  if (!cTokens.length || !tTokens.length) return false;
+  if (tTokens.length === 1 && tTokens[0]!.length <= 4) {
+    return cTokens[0] === tTokens[0] && cTokens.length <= 2;
+  }
+  const cSet = new Set(cTokens);
+  const tSig = tTokens.filter((w) => w.length >= 2);
+  const queryWords = tSig.length ? tSig : tTokens;
+  return queryWords.every((w) => cSet.has(w)) && cTokens.length <= queryWords.length + 3;
+}
+
+function artistsMatch(candidateArtist: string, targetArtist: string): boolean {
+  const wanted = artistsOf(targetArtist);
+  if (!wanted.size) return true;
+  const cand = artistsOf(candidateArtist);
+  if (!cand.size) return false;
+  if ([...cand].some((a) => wanted.has(a))) return true;
+  const cNorm = normalized(candidateArtist);
+  const tNorm = normalized(targetArtist);
+  return !!cNorm && !!tNorm && (cNorm.length >= 4 && tNorm.includes(cNorm) || tNorm.length >= 4 && cNorm.includes(tNorm));
+}
 
 /** The hit that is this recording, or null: every test a requirement, the closest length wins. */
 export function bestLrcRedHit(hits: LrcRedHit[], title: string, artist: string, durationMs: number): LrcRedHit | null {
@@ -98,7 +128,9 @@ export function bestLrcRedHit(hits: LrcRedHit[], title: string, artist: string, 
       !!lrcRedDocument(hit.isrc) &&
       coreOf(hit.title) === wantedTitle &&
       sameSet(versionOf(hit.title), wantedVersion) &&
-      (!wantedArtists.size || [...artistsOf(hit.artist ?? '')].some((a) => wantedArtists.has(a))) &&
+      (wantedArtists.size
+        ? [...artistsOf(hit.artist ?? '')].some((a) => wantedArtists.has(a))
+        : durationMs > 0 && hit.duration != null && distance(hit) <= 3) &&
       distance(hit) <= 3,
   );
   return passing.sort((a, b) => distance(a) - distance(b))[0] ?? null;
@@ -111,7 +143,13 @@ export async function lrcRed(q: LyricsQuery, get: SharedGet): Promise<Parsed | n
     if (found) return found;
   }
   const body = json<{ hits?: LrcRedHit[] }>(await lyricsGet(urlWith(`${LRC_RED}search.json`, { q: `${q.title} ${q.artist}`.trim() })));
-  const hit = bestLrcRedHit(body?.hits ?? [], q.title, q.artist, q.durationMs);
+  let hit = bestLrcRedHit(body?.hits ?? [], q.title, q.artist, q.durationMs);
+  if (!hit && q.artist && leadArtistOf(q.artist) !== q.artist) {
+    const retry = json<{ hits?: LrcRedHit[] }>(
+      await lyricsGet(urlWith(`${LRC_RED}search.json`, { q: `${q.title} ${leadArtistOf(q.artist)}`.trim() })),
+    );
+    hit = bestLrcRedHit(retry?.hits ?? [], q.title, q.artist, q.durationMs);
+  }
   const url = lrcRedDocument(hit?.isrc);
   return url && url !== known ? fromTtml(await get(url)) : null;
 }
@@ -119,16 +157,54 @@ export async function lrcRed(q: LyricsQuery, get: SharedGet): Promise<Parsed | n
 // ---- BiniLyrics (BiniLyrics.kt) ------------------------------------------------------------
 
 export interface BiniHit {
+  track_name?: string;
+  artist_name?: string;
+  album_name?: string;
+  duration?: number;
   isrc?: string;
   lyricsUrl?: string;
 }
 
+/** Validates BiniLyrics hits strictly so a remix/mix/cover is never taken as the studio recording. */
+export function bestBiniHit(results: BiniHit[], title: string, artist: string, durationMs: number): BiniHit | null {
+  const wantedTitle = coreOf(title);
+  const wantedVersion = versionOf(title);
+  const wantedArtists = artistsOf(artist);
+  const secs = durationMs / 1000;
+  const distance = (hit: BiniHit) => (durationMs > 0 && hit.duration != null ? Math.abs(hit.duration - secs) : 0);
+  const passing = results.filter((hit) => {
+    if (!hit.track_name || !titlesMatch(hit.track_name, title)) return false;
+    if (!sameSet(versionOf(hit.track_name), wantedVersion)) return false;
+    if (wantedArtists.size) {
+      if (!hit.artist_name || !artistsMatch(hit.artist_name, artist)) return false;
+    } else if (coreOf(hit.track_name) !== wantedTitle || durationMs <= 0 || hit.duration == null || distance(hit) > 4) {
+      return false;
+    }
+    return distance(hit) <= 4;
+  });
+  return passing.sort((a, b) => distance(a) - distance(b) || (coreOf(a.track_name ?? '') === wantedTitle ? -1 : 1))[0] ?? null;
+}
+
 /** Which recording this is, without fetching its words: the ISRC every other source can use. */
 export async function biniIdentify(q: LyricsQuery): Promise<BiniHit | null> {
-  const url = q.isrc
-    ? urlWith('https://lyrics-api.binimum.org/', { isrc: q.isrc })
-    : urlWith('https://lyrics-api.binimum.org/', { track: q.title, artist: q.artist, album: q.album, duration: seconds(q.durationMs) });
-  return json<{ results?: BiniHit[] }>(await lyricsGet(url))?.results?.[0] ?? null;
+  if (q.isrc) {
+    const byIsrc = json<{ results?: BiniHit[] }>(await lyricsGet(urlWith('https://lyrics-api.binimum.org/', { isrc: q.isrc })))?.results?.[0];
+    return byIsrc ?? null;
+  }
+  const url = urlWith('https://lyrics-api.binimum.org/', { track: q.title, artist: q.artist, album: q.album, duration: seconds(q.durationMs) });
+  let results = json<{ results?: BiniHit[] }>(await lyricsGet(url))?.results ?? [];
+  let match = bestBiniHit(results, q.title, q.artist, q.durationMs);
+  if (!match && q.artist && leadArtistOf(q.artist) !== q.artist) {
+    const retryUrl = urlWith('https://lyrics-api.binimum.org/', {
+      track: q.title,
+      artist: leadArtistOf(q.artist),
+      album: q.album,
+      duration: seconds(q.durationMs),
+    });
+    results = json<{ results?: BiniHit[] }>(await lyricsGet(retryUrl))?.results ?? [];
+    match = bestBiniHit(results, q.title, q.artist, q.durationMs);
+  }
+  return match;
 }
 
 export async function bini(q: LyricsQuery, get: SharedGet, hit: BiniHit | null): Promise<(Parsed & { isrc: string | null }) | null> {
@@ -142,7 +218,10 @@ export async function bini(q: LyricsQuery, get: SharedGet, hit: BiniHit | null):
 
 async function betterLyricsAt(endpoint: string, q: LyricsQuery): Promise<Parsed | null> {
   const body = await lyricsGet(urlWith(endpoint, { s: q.title, a: q.artist, d: seconds(q.durationMs), al: q.album }));
-  return body ? parseProvider(body) : null;
+  const first = body ? parseProvider(body) : null;
+  if (first || !q.artist || leadArtistOf(q.artist) === q.artist) return first;
+  const retry = await lyricsGet(urlWith(endpoint, { s: q.title, a: leadArtistOf(q.artist), d: seconds(q.durationMs), al: q.album }));
+  return retry ? parseProvider(retry) : null;
 }
 export const betterLyrics = (q: LyricsQuery) => betterLyricsAt('https://lyrics-api.boidu.dev/getLyrics', q);
 export const betterLyricsPortato = (q: LyricsQuery) => betterLyricsAt('https://lyrics-api.boidu.dev/qq/getLyrics', q);
@@ -150,12 +229,25 @@ export const betterLyricsPortato = (q: LyricsQuery) => betterLyricsAt('https://l
 // ---- Unison (Unison.kt) -----------------------------------------------------------------------
 
 export async function unison(q: LyricsQuery): Promise<Parsed | null> {
-  const body = json<{ success?: boolean; data?: { lyrics?: string; format?: string; syncType?: string } }>(
+  let body = json<{ success?: boolean; data?: { song?: string; artist?: string; lyrics?: string; format?: string; syncType?: string } }>(
     await lyricsGet(urlWith('https://unison.boidu.dev/lyrics', { song: q.title, artist: q.artist, album: q.album, duration: seconds(q.durationMs) })),
   );
+  if ((!body?.success || !body.data?.lyrics) && q.artist && leadArtistOf(q.artist) !== q.artist) {
+    body = json<{ success?: boolean; data?: { song?: string; artist?: string; lyrics?: string; format?: string; syncType?: string } }>(
+      await lyricsGet(
+        urlWith('https://unison.boidu.dev/lyrics', { song: q.title, artist: leadArtistOf(q.artist), album: q.album, duration: seconds(q.durationMs) }),
+      ),
+    );
+  }
   const data = body?.success ? body.data : null;
   const text = data?.lyrics?.trim();
   if (!text) return null;
+  if (data!.song && (!titlesMatch(data!.song, q.title) || !sameSet(versionOf(data!.song), versionOf(q.title)))) {
+    return null;
+  }
+  if (data!.artist && q.artist && !artistsMatch(data!.artist, q.artist)) {
+    return null;
+  }
   if (data!.format?.toLowerCase() === 'ttml') return fromTtml(text);
   if (data!.syncType?.toLowerCase() === 'plain') return fromLines(plainLines(text));
   const enhanced = parseEnhancedLrc(text);
@@ -215,16 +307,28 @@ function textScore(candidate: string, wanted: string, exact: number, partial: nu
 }
 
 function bestCandidate(root: unknown, q: LyricsQuery): Candidate | null {
+  const wantedTitle = coreOf(q.title);
+  const wantedVersion = versionOf(q.title);
+  const wantedArtists = artistsOf(q.artist);
   let best: { c: Candidate; score: number } | null = null;
   for (const c of collectCandidates(root)) {
-    let score = textScore(c.title, q.title, 20, 10) + textScore(c.artist, q.artist, 15, 5);
+    const cTitle = coreOf(c.title);
+    const titleScore = cTitle === wantedTitle ? 25 : textScore(c.title, q.title, 20, 10);
+    if (!titleScore || !sameSet(versionOf(c.title), wantedVersion)) continue;
+    const cArtists = artistsOf(c.artist);
+    const artistMatched =
+      !wantedArtists.size || [...cArtists].some((a) => wantedArtists.has(a)) || textScore(c.artist, q.artist, 15, 5) > 0;
+    const artistScore = artistMatched ? textScore(c.artist, q.artist, 15, 5) : 0;
+    const durationDiff = q.durationMs > 0 && c.durationMs > 0 ? Math.abs(c.durationMs - q.durationMs) : 0;
+    if (!artistMatched && durationDiff > 5000) continue;
+    let score = titleScore + artistScore;
     if (q.durationMs > 0 && c.durationMs > 0) {
-      const diff = Math.abs(c.durationMs - q.durationMs);
-      score += diff < 3000 ? 10 : diff < 10_000 ? 5 : 0;
+      if (durationDiff > 15_000) continue;
+      score += durationDiff < 3000 ? 12 : durationDiff < 10_000 ? 6 : 0;
     }
-    if (!best || score > best.score) best = { c, score };
+    if (score >= 22 && (!best || score > best.score)) best = { c, score };
   }
-  return best && best.score >= 10 ? best.c : null;
+  return best?.c ?? null;
 }
 
 /** PaxSenix's structured Apple payload, keeping its syllable timings (PaxSenix.parseTimedApple). */
@@ -306,15 +410,21 @@ async function paxGeneric(q: LyricsQuery, key: string): Promise<Parsed | null> {
   const root = json<{ lyrics?: unknown[] }>(raw);
   const documents = Array.isArray(root?.lyrics) ? root.lyrics : null;
   if (!documents?.length) return paxResponse(raw);
+  const wantedVersion = versionOf(q.title);
   // Candidates, not lines: pick one recording before parsing (PaxSenix.parseLrcGet).
   const scored = documents
     .map((document) => {
       const parsed = paxResponse(JSON.stringify(document));
       if (!parsed) return null;
       const c = collectCandidates([document])[0];
-      const score = c ? textScore(c.title, q.title, 20, 10) + textScore(c.artist, q.artist, 15, 5) : 0;
+      if (!c || !titlesMatch(c.title, q.title) || !sameSet(versionOf(c.title), wantedVersion)) return null;
+      if (q.artist && c.artist && !artistsMatch(c.artist, q.artist)) return null;
+      const score = textScore(c.title, q.title, 20, 10) + textScore(c.artist, q.artist, 15, 5);
       const last = Math.max(0, ...parsed.lines.map((l) => Math.max(l.timeMs, l.sungUntilMs ?? 0, l.words.at(-1)?.endMs ?? 0)));
-      return { parsed, score, distance: q.durationMs > 0 ? Math.abs(last - q.durationMs) : 0 };
+      const distance = q.durationMs > 0 && last > 0 ? Math.abs(last - q.durationMs) : 0;
+      if (q.durationMs > 0 && last > 0 && distance > 18_000) return null;
+      if (score < 20) return null;
+      return { parsed, score, distance };
     })
     .filter((x): x is NonNullable<typeof x> => !!x)
     .sort((a, b) => b.score - a.score || a.distance - b.distance);
@@ -509,25 +619,50 @@ export function isKugouInstrumentalNotice(lrc: string): boolean {
 }
 
 export async function kugou(q: LyricsQuery): Promise<Parsed | null> {
-  const keyword = `${stripParenthetical(q.title)} - ${stripParenthetical(q.artist)}${q.album ? ` ${q.album}` : ''}`;
+  const wantedTitle = coreOf(q.title);
+  const wantedVersion = versionOf(q.title);
+  const wantedArtists = artistsOf(q.artist);
+  const keyword = `${stripParenthetical(q.title)}${q.artist ? ` - ${stripParenthetical(leadArtistOf(q.artist))}` : ''}${q.album ? ` ${q.album}` : ''}`;
   const secs = Math.floor(q.durationMs / 1000);
   const ext = { route: 'extension' as const };
-  const songs = json<{ data?: { info?: { hash: string; duration?: number }[] } }>(
+  const songs = json<{ data?: { info?: { hash: string; duration?: number; songname?: string; singername?: string }[] } }>(
     await lyricsGet(urlWith('https://mobileservice.kugou.com/api/v3/search/song', { version: 9108, plat: 0, pagesize: 8, showtype: 0, keyword }), ext),
   );
   const hashes = (songs?.data?.info ?? [])
-    .filter((s) => secs <= 0 || Math.abs((s.duration ?? -1) - secs) <= 8)
+    .filter((s) => {
+      if (secs > 0 && Math.abs((s.duration ?? -1) - secs) > 8) return false;
+      if (s.songname && (!titlesMatch(s.songname, q.title) || !sameSet(versionOf(s.songname), wantedVersion))) return false;
+      if (s.singername && wantedArtists.size && !artistsMatch(s.singername, q.artist)) return false;
+      if (!wantedArtists.size && (secs <= 0 || !s.songname || coreOf(s.songname) !== wantedTitle)) return false;
+      return true;
+    })
     .sort((a, b) => Math.abs((a.duration ?? 0) - secs) - Math.abs((b.duration ?? 0) - secs))
     .map((s) => s.hash);
-  type Candidates = { candidates?: { id: string; accesskey: string }[] };
-  let candidate: { id: string; accesskey: string } | undefined;
+  type KuGouCandidate = { id: string; accesskey: string; song?: string; singer?: string; duration?: number };
+  type Candidates = { candidates?: KuGouCandidate[] };
+  const isCandidateValid = (c: KuGouCandidate) => {
+    if (c.song && (!titlesMatch(c.song, q.title) || !sameSet(versionOf(c.song), wantedVersion))) return false;
+    if (secs > 0 && c.duration != null && Math.abs(Math.round(c.duration / 1000) - secs) > 10) return false;
+    if (c.singer && wantedArtists.size && !artistsMatch(c.singer, q.artist)) return false;
+    return true;
+  };
+  let candidate: KuGouCandidate | undefined;
   for (const hash of hashes) {
-    candidate = json<Candidates>(await lyricsGet(urlWith('https://lyrics.kugou.com/search', { ver: 1, man: 'yes', client: 'pc', hash }), ext))?.candidates?.[0];
+    candidate = json<Candidates>(await lyricsGet(urlWith('https://lyrics.kugou.com/search', { ver: 1, man: 'yes', client: 'pc', hash }), ext))
+      ?.candidates?.find(isCandidateValid);
     if (candidate) break;
   }
-  candidate ??= json<Candidates>(
-    await lyricsGet(urlWith('https://lyrics.kugou.com/search', { ver: 1, man: 'yes', client: 'pc', keyword, duration: secs > 0 ? secs * 1000 : null }), ext),
-  )?.candidates?.[0];
+  if (!candidate) {
+    const keywordCandidates =
+      json<Candidates>(
+        await lyricsGet(urlWith('https://lyrics.kugou.com/search', { ver: 1, man: 'yes', client: 'pc', keyword, duration: secs > 0 ? secs * 1000 : null }), ext),
+      )?.candidates ?? [];
+    candidate = keywordCandidates.find((c) => {
+      if (!isCandidateValid(c)) return false;
+      if (!wantedArtists.size && (!c.song || coreOf(c.song) !== wantedTitle || secs <= 0)) return false;
+      return true;
+    });
+  }
   if (!candidate) return null;
   const download = json<{ content?: string }>(
     await lyricsGet(urlWith('https://lyrics.kugou.com/download', { fmt: 'lrc', charset: 'utf8', client: 'pc', ver: 1, id: candidate.id, accesskey: candidate.accesskey }), ext),
@@ -551,16 +686,51 @@ const lrclibClean = (s: string) => s.replace(LRCLIB_NOISE, ' ').split(' | ')[0]!
 export async function lrclib(q: LyricsQuery): Promise<Parsed | null> {
   const title = lrclibClean(q.title);
   const artist = lrclibClean(q.artist);
+  const wantedTitle = coreOf(title);
+  const wantedVersion = versionOf(title);
+  const wantedArtists = artistsOf(artist);
+  const lead = leadArtistOf(artist);
   const secs = Math.floor(q.durationMs / 1000);
-  const exact = json<{ syncedLyrics?: string }>(
-    await lyricsGet(urlWith('https://lrclib.net/api/get', { track_name: title, artist_name: artist, duration: secs })),
-  )?.syncedLyrics;
-  let synced = exact;
+  let synced = artist
+    ? json<{ syncedLyrics?: string }>(
+        await lyricsGet(urlWith('https://lrclib.net/api/get', { track_name: title, artist_name: artist, duration: secs })),
+      )?.syncedLyrics
+    : undefined;
+  if (!synced && lead && lead !== artist) {
+    synced = json<{ syncedLyrics?: string }>(
+      await lyricsGet(urlWith('https://lrclib.net/api/get', { track_name: title, artist_name: lead, duration: secs })),
+    )?.syncedLyrics;
+  }
   if (!synced) {
-    const hits = json<{ syncedLyrics?: string; duration?: number }[]>(await lyricsGet(urlWith('https://lrclib.net/api/search', { track_name: title, artist_name: artist })));
-    synced = (hits ?? [])
-      .filter((h) => h.syncedLyrics?.trim())
-      .sort((a, b) => Math.abs((a.duration ?? 0) - secs) - Math.abs((b.duration ?? 0) - secs))[0]?.syncedLyrics;
+    type LrcHit = { trackName?: string; artistName?: string; syncedLyrics?: string; duration?: number };
+    let hits = json<LrcHit[]>(
+      await lyricsGet(
+        urlWith('https://lrclib.net/api/search', artist ? { track_name: title, artist_name: lead || artist } : { track_name: title }),
+      ),
+    );
+    if ((!hits || !hits.length) && artist) {
+      hits = json<LrcHit[]>(await lyricsGet(urlWith('https://lrclib.net/api/search', { track_name: title })));
+    }
+    const passing = (hits ?? [])
+      .filter((h) => {
+        if (!h.syncedLyrics?.trim() || !h.trackName) return false;
+        if (!titlesMatch(h.trackName, title) || !sameSet(versionOf(h.trackName), wantedVersion)) return false;
+        if (wantedArtists.size) {
+          if (!h.artistName || !artistsMatch(h.artistName, artist)) return false;
+        } else if (coreOf(h.trackName) !== wantedTitle || secs <= 0 || h.duration == null || Math.abs(h.duration - secs) > 4) {
+          return false;
+        }
+        if (secs > 0 && h.duration != null && Math.abs(h.duration - secs) > 12) return false;
+        return true;
+      })
+      .map((h) => {
+        const hTitle = coreOf(h.trackName ?? '');
+        const titleRank = hTitle === wantedTitle ? 2 : 1;
+        const durDist = secs > 0 && h.duration != null ? Math.abs(h.duration - secs) : 0;
+        return { h, titleRank, durDist };
+      })
+      .sort((a, b) => b.titleRank - a.titleRank || a.durDist - b.durDist);
+    synced = passing[0]?.h.syncedLyrics;
   }
   return synced ? fromLines(parseLrc(synced)) : null;
 }
@@ -652,26 +822,49 @@ export function parseRichSync(body: string): LyricLine[] {
 
 export async function musixmatch(q: LyricsQuery): Promise<Parsed | null> {
   const secs = Math.floor(q.durationMs / 1000);
-  const search = await mxmGet((token) =>
+  const lead = leadArtistOf(q.artist);
+  let search = await mxmGet((token) =>
     urlWith(`${MXM}/track.search`, {
       app_id: MXM_APP, format: 'json', q_track: q.title, q_artist: q.artist, f_has_lyrics: 1,
       s_track_rating: 'desc', quorum_factor: 1, page_size: 10, page: 1, usertoken: token,
     }),
   );
   type Track = { track_id: number; track_name: string; artist_name?: string; track_length?: number; has_subtitles?: number; has_richsync?: number };
-  const tracks = ((search?.track_list as { track: Track }[] | undefined) ?? []).map((t) => t.track);
+  let tracks = ((search?.track_list as { track: Track }[] | undefined) ?? []).map((t) => t.track);
+  if (!tracks.length && lead && lead !== q.artist) {
+    search = await mxmGet((token) =>
+      urlWith(`${MXM}/track.search`, {
+        app_id: MXM_APP, format: 'json', q_track: q.title, q_artist: lead, f_has_lyrics: 1,
+        s_track_rating: 'desc', quorum_factor: 1, page_size: 10, page: 1, usertoken: token,
+      }),
+    );
+    tracks = ((search?.track_list as { track: Track }[] | undefined) ?? []).map((t) => t.track);
+  }
+  const wantedCore = coreOf(q.title);
+  const wantedVersion = versionOf(q.title);
+  const wantedArtists = artistsOf(q.artist);
   const score = (t: Track) => {
-    const name = t.track_name.trim().toLowerCase();
-    const want = q.title.trim().toLowerCase();
-    let s = name === want ? 80 : name.includes(want) || want.includes(name) ? 40 : 0;
-    if ((t.artist_name ?? '').toLowerCase().includes(q.artist.toLowerCase())) s += 40;
-    if (t.track_length != null) {
+    const tCore = coreOf(t.track_name);
+    if (!sameSet(versionOf(t.track_name), wantedVersion)) return -100;
+    if (!titlesMatch(t.track_name, q.title)) return -100;
+    const nameMatch = tCore === wantedCore ? 80 : 45;
+    const artistMatched = !wantedArtists.size || artistsMatch(t.artist_name ?? '', q.artist);
+    if (wantedArtists.size && !artistMatched) return -100;
+    if (!wantedArtists.size && (tCore !== wantedCore || secs <= 0 || t.track_length == null || Math.abs(t.track_length - secs) > 5)) {
+      return -100;
+    }
+    let s = nameMatch + (wantedArtists.size && artistMatched ? 40 : 0);
+    if (secs > 0 && t.track_length != null) {
       const diff = Math.abs(t.track_length - secs);
-      s += diff <= 2 ? 30 : diff <= 5 ? 15 : diff <= 10 ? 5 : -20;
+      if (diff > 15) return -100;
+      s += diff <= 2 ? 30 : diff <= 5 ? 15 : diff <= 10 ? 5 : -10;
     }
     return s;
   };
-  const track = tracks.sort((a, b) => score(b) - score(a))[0];
+  const track = tracks
+    .map((t) => ({ t, score: score(t) }))
+    .filter((entry) => entry.score >= 75)
+    .sort((a, b) => b.score - a.score)[0]?.t;
   if (!track) return null;
   if (track.has_richsync) {
     const rich = await mxmGet((token) => urlWith(`${MXM}/track.richsync.get`, { app_id: MXM_APP, format: 'json', track_id: track.track_id, usertoken: token }));
@@ -742,20 +935,24 @@ export async function genius(q: LyricsQuery): Promise<Parsed | null> {
       await lyricsGet(urlWith('https://genius.com/api/search/multi', { q: query }), { route: 'extension' }),
     );
     const hits = body?.response?.sections?.find((s) => s.type === 'song')?.hits?.map((h) => h.result).filter((r): r is Obj => !!r) ?? [];
-    const t = (bare || title).toLowerCase();
-    const a = artist.toLowerCase();
+    const t = coreOf(bare || title);
+    const wantedVersion = versionOf(title);
+    const wantedArtists = artistsOf(artist);
     const scored = hits
       .map((hit) => {
-        const ht = String(hit.title ?? '').toLowerCase();
-        const ha = String(hit.artist_names ?? '').toLowerCase();
-        const titleMatch = !!t && (ht === t || ht.includes(t) || t.includes(ht));
-        const artistMatch = !!a && (ha === a || ha.includes(a) || a.includes(ha));
-        if (!titleMatch && !artistMatch) return null;
-        let score = (ht === t ? 50 : titleMatch ? 25 : 0) + (artistMatch ? (ha === a ? 40 : 20) : 0);
+        const rawTitle = String(hit.title ?? '');
+        const ht = coreOf(rawTitle);
+        const ha = String(hit.artist_names ?? '');
+        if (!t || !titlesMatch(rawTitle, bare || title)) return null;
+        if (!sameSet(versionOf(rawTitle), wantedVersion)) return null;
+        if (!wantedArtists.size && ht !== t) return null;
+        const artistMatch = !wantedArtists.size || artistsMatch(ha, artist);
+        if (wantedArtists.size && !artistMatch) return null;
+        let score = (ht === t ? 50 : 25) + (wantedArtists.size && artistMatch ? (normalized(ha) === normalized(artist) ? 40 : 25) : 10);
         const path = String(hit.path ?? '');
-        if (/translation/i.test(path) && !t.includes('translation')) score -= 30;
-        if (/tracklist|album-art/i.test(path)) score -= 50;
-        return score > 0 ? { hit, score } : null;
+        if (/translation/i.test(path) && !t.includes('translation')) score -= 45;
+        if (/tracklist|album-art|interview/i.test(path)) score -= 60;
+        return score >= 45 ? { hit, score } : null;
       })
       .filter((x): x is { hit: Obj; score: number } => !!x)
       .sort((x, y) => y.score - x.score);

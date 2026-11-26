@@ -231,6 +231,16 @@
     <string name="mood_heartbreak_line">Breakup anthems, one tear at a time.</string>
     <string name="mood_love">Love</string>
     <string name="mood_love_line">Romantic songs for the moment.</string>
+    <string name="mood_sad">Sad</string>
+    <string name="mood_sad_line">Heartbreak, lonely nights and songs that feel it all.</string>
+    <string name="mood_happy">Happy</string>
+    <string name="mood_happy_line">Cheerful, uplifting songs to lift the day.</string>
+    <string name="mood_late_night">Late Night</string>
+    <string name="mood_late_night_line">Atmospheric, dreamy sounds for after dark.</string>
+    <string name="mood_road_trip">Road Trip</string>
+    <string name="mood_road_trip_line">Travel-friendly sing-alongs for open highways.</string>
+    <string name="mood_nostalgia">Nostalgia</string>
+    <string name="mood_nostalgia_line">Timeless throwbacks and old favourites.</string>
     <string name="find_your_mood">Find Your Mood</string>
     <string name="mood_after_hours">After Hours</string>
     <string name="mood_after_hours_line">Late-night grooves for when the city goes quiet.</string>

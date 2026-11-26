@@ -63,6 +63,14 @@ func getOrigin(key string) string {
 	return val
 }
 
+func getString(key, fallback string) string {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return fallback
+	}
+	return val
+}
+
 func getURL(key string) string {
 	val := strings.TrimSpace(os.Getenv(key))
 	if val == "" {
@@ -122,4 +130,14 @@ var (
 	PresenceMaxEntries      = getInt("JAM_PRESENCE_MAX_ENTRIES", 200000)
 	PresencePingsPerMinute  = getInt("JAM_PRESENCE_PINGS_PER_MINUTE", 20)
 	PresenceRateLimitMaxIPs = getInt("JAM_PRESENCE_RATE_LIMIT_MAX_IPS", 100000)
+)
+
+// Server-only background AI music curation settings (never exposed to clients).
+var (
+	GeminiAPIKey    = getString("GEMINI_API_KEY", "")
+	GeminiModel     = getString("GEMINI_MODEL", "gemini-2.5-flash")
+	OpenAIAPIKey    = getString("OPENAI_API_KEY", "")
+	OpenAIBaseURL   = getString("OPENAI_BASE_URL", "https://api.openai.com/v1")
+	OpenAIModel     = getString("OPENAI_MODEL", "gpt-4o-mini")
+	AIRatePerMinute = getInt("AI_RATE_PER_MINUTE", 12)
 )

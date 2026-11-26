@@ -41,4 +41,5 @@ private val AudioQuality.labelRes: Int
         AudioQuality.MEDIUM -> R.string.medium
         AudioQuality.HIGH -> R.string.high
         AudioQuality.LOSSLESS -> R.string.lossless
+        AudioQuality.HI_RES_LOSSLESS -> R.string.hi_res_lossless
     }

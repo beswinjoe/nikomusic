@@ -19,8 +19,11 @@ class AudioQualityCeilingTest {
     private val lossless = SourceKind.entries.filter { it.canServeLossless }
 
     @Test
-    fun `lossless asks every source`() {
-        SourceKind.entries.forEach { assertTrue(it.name, AudioQuality.LOSSLESS.permits(it)) }
+    fun `lossless and hi-res lossless ask every source`() {
+        SourceKind.entries.forEach {
+            assertTrue(it.name, AudioQuality.LOSSLESS.permits(it))
+            assertTrue(it.name, AudioQuality.HI_RES_LOSSLESS.permits(it))
+        }
     }
 
     @Test

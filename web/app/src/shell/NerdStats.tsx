@@ -2,39 +2,69 @@ import { useEffect, useReducer, useState } from 'react';
 import { useParty } from '@/party/listenTogether';
 import type { AutoDJSnapshot } from '@/playback/automix';
 import type { analyzer as Analyzer } from '@/playback/automix/analysis/analyzer';
+import { audioQualityOption, isDolbyCodec, resolveStreamBadge } from '@/playback/audioQuality';
 import type { NowPlaying } from '@/state/player';
 import { usePlayer } from '@/state/player';
 
 /**
- * Stats for nerds, under the artist in the full-screen player (the phone's
- * SleeveNerdStats): the stream as it plays, and under it, dimmer, what
- * Automix is doing. Nothing at all while the setting is off.
+ * Audio quality / immersive badge plus Stats for nerds under the artist in the full-screen player.
  */
 export function NerdStats() {
   const show = usePlayer((s) => s.showNerdStats);
   const nowPlaying = usePlayer((s) => s.nowPlaying);
   const automix = usePlayer((s) => s.automix);
-  if (!show || !nowPlaying) return null;
+  const quality = usePlayer((s) => s.audioQuality);
+  const spatialAudio = usePlayer((s) => s.spatialAudio);
+  if (!nowPlaying) return null;
+
+  const s = nowPlaying.stream;
+  const nativeAtmos = isDolbyCodec(s?.codec, s?.channels);
+  const badge = resolveStreamBadge({
+    codec: s?.codec ?? null,
+    bitrateKbps: s?.bitrateKbps ?? null,
+    sampleRateHz: s?.sampleRateHz ?? null,
+    channels: s?.channels ?? null,
+    spatialAudio: spatialAudio && !nativeAtmos,
+    quality,
+  });
+
+  if (!show && (!badge || badge.kind === 'high')) return null;
+
   return (
     // The phone's shadow: free on the dark mesh, and what keeps it legible over a bright music video.
-    <div className="mt-1 flex min-w-0 flex-col gap-px type-[500_11px/14px] tabular-nums [text-shadow:0_1px_4px_rgb(0_0_0/0.55)]">
-      <span className="truncate text-secondary">{describeStream(nowPlaying) ?? 'Measuring the stream…'}</span>
-      {automix && <AutomixLine videoId={nowPlaying.videoId} />}
+    <div className="mt-1 flex min-w-0 flex-col gap-0.5 type-[500_11px/14px] tabular-nums [text-shadow:0_1px_4px_rgb(0_0_0/0.55)]">
+      {badge && (badge.kind === 'atmos' || badge.kind === 'hi-res-lossless' || badge.kind === 'lossless' || badge.kind === 'spatial') && (
+        <span className="inline-flex w-fit items-center gap-1 rounded-[4px] bg-white/14 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-white/90 uppercase [backdrop-filter:blur(8px)]">
+          {badge.label}
+        </span>
+      )}
+      {show && (
+        <span className="truncate text-secondary">
+          {describeStream(nowPlaying, quality, spatialAudio && !nativeAtmos) ?? 'Measuring the stream…'}
+        </span>
+      )}
+      {show && automix && <AutomixLine videoId={nowPlaying.videoId} />}
     </div>
   );
 }
 
-/** "Opus · 48 kHz · 141 kbps · Stereo · itag 251 · VISIONOS direct", as much as is known. */
-function describeStream(np: NowPlaying): string | null {
+/** "Opus · 48 kHz · 141 kbps · Stereo · itag 251 · VISIONOS direct · Ceiling: Hi-Res Lossless", as much as is known. */
+function describeStream(
+  np: NowPlaying,
+  quality: ReturnType<typeof usePlayer.getState>['audioQuality'],
+  spatialActive: boolean,
+): string | null {
   const s = np.stream;
   if (!s) return null;
   const parts = [
     s.codec,
     s.sampleRateHz ? `${+(s.sampleRateHz / 1000).toFixed(1)} kHz` : null,
     s.bitrateKbps ? `${s.bitrateKbps} kbps` : null,
-    s.channels ? ({ 1: 'Mono', 2: 'Stereo' } as Record<number, string>)[s.channels] ?? `${s.channels} channels` : null,
+    s.channels ? ({ 1: 'Mono', 2: 'Stereo', 6: '5.1', 8: '7.1' } as Record<number, string>)[s.channels] ?? `${s.channels} channels` : null,
     s.itag ? `itag ${s.itag}` : null,
     `${s.client} ${s.mode}`,
+    spatialActive ? 'Spatial DSP' : null,
+    `Max: ${audioQualityOption(quality).label}`,
   ];
   return parts.filter(Boolean).join(' · ');
 }

@@ -4,6 +4,8 @@ import com.music.nikomusic.data.DebugLog as Log
 import com.music.nikomusic.data.model.ArtistPage
 import com.music.nikomusic.data.model.ArtistRef
 import com.music.nikomusic.data.model.HomeShelf
+import com.music.nikomusic.data.model.SearchFilter
+import com.music.nikomusic.data.model.SearchResult
 import com.music.nikomusic.data.model.ShelfItem
 import com.music.nikomusic.data.model.Song
 import com.music.nikomusic.data.model.TopPick
@@ -20,6 +22,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.time.LocalDateTime
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 /**
@@ -57,16 +60,125 @@ object TopPicks {
     /** Below this, a filtered station would be over before it got going; keep it unfiltered. */
     private const val MIN_FILTERED_QUEUE = 12
 
+    /** Latest computed listener profile shared with on-tap station & mood queue builders. */
+    @Volatile
+    private var latestProfile: RecommendationEngine.ListenerProfile = RecommendationEngine.ListenerProfile()
+
+    /** Recent opener tracks per mood to avoid serving identical mood intros back-to-back. */
+    private val recentMoodOpeners = ConcurrentHashMap<TopPickMood, MutableSet<String>>()
+
     /**
      * What this app knows about the listener's taste without asking YouTube:
-     * its own Replay chart. Second to the account's history when signed in,
-     * and all there is when signed out.
+     * its own Replay chart, skip patterns, liked songs, genres and mood history.
+     * Second to the account's history when signed in, and all there is when signed out.
      */
     data class LocalTaste(
         val artists: List<ArtistRef> = emptyList(),
         val songs: List<Song> = emptyList(),
         val genres: List<String> = emptyList(),
+        val likedSongs: List<Song> = emptyList(),
+        val recentSongIds: Set<String> = emptySet(),
+        val trackStats: List<RecommendationEngine.TrackFeedback> = emptyList(),
+        val artistGenres: Map<String, List<String>> = emptyMap(),
+        val moodAffinities: Map<TopPickMood, Double> = emptyMap(),
+        val discoveredArtists: Set<String> = emptySet(),
     )
+
+    fun noteMoodSelected(mood: TopPickMood) {
+        val current = latestProfile
+        val updated = current.favoriteMoods.toMutableMap()
+        updated[mood] = (updated[mood] ?: 0.0) + 1.0
+        latestProfile = current.copy(favoriteMoods = updated)
+    }
+
+    fun noteTrackSkipped(videoId: String) {
+        val current = latestProfile
+        val tracks = current.tracks.toMutableMap()
+        val prev = tracks[videoId]
+        val next = (prev ?: RecommendationEngine.TrackFeedback(videoId = videoId)).let {
+            it.copy(
+                skips = it.skips + 1,
+                earlySkips = it.earlySkips + 1,
+                lastSkippedMs = System.currentTimeMillis(),
+            )
+        }
+        tracks[videoId] = next
+        latestProfile = current.copy(tracks = tracks)
+    }
+
+    private fun buildProfile(history: List<Song>, local: LocalTaste): RecommendationEngine.ListenerProfile {
+        val trackMap = LinkedHashMap<String, RecommendationEngine.TrackFeedback>()
+        for (tf in local.trackStats) {
+            trackMap[tf.videoId] = tf
+        }
+        val likedIds = LinkedHashSet<String>()
+        for (song in local.likedSongs) {
+            likedIds += song.videoId
+            val existing = trackMap[song.videoId]
+            trackMap[song.videoId] = (existing ?: RecommendationEngine.TrackFeedback(
+                videoId = song.videoId,
+                title = song.title,
+                artist = song.artist,
+            )).copy(liked = true)
+        }
+        history.forEachIndexed { idx, song ->
+            if (song.videoId !in trackMap) {
+                trackMap[song.videoId] = RecommendationEngine.TrackFeedback(
+                    videoId = song.videoId,
+                    title = song.title,
+                    artist = song.artist,
+                    plays = 1,
+                    lastPlayedMs = System.currentTimeMillis() - idx * 300_000L,
+                )
+            }
+        }
+        val recentIds = (local.recentSongIds + history.take(25).map { it.videoId }).toSet()
+        val recentRecs = (local.songs.take(5) + history.take(20))
+            .mapTo(HashSet()) { RecommendationEngine.recordingKey(it.title, it.artist) }
+
+        val skipByArtist = mutableMapOf<String, Pair<Int, Int>>()
+        for (tf in local.trackStats) {
+            for (a in RecommendationEngine.artistSet(tf.artist)) {
+                val prev = skipByArtist[a] ?: (0 to 0)
+                skipByArtist[a] = (prev.first + tf.skips) to (prev.second + tf.earlySkips)
+            }
+        }
+        val artistAffinities = local.artists.mapIndexed { idx, ref ->
+            val key = normalizedArtistName(ref.name)
+            val skips = skipByArtist[key] ?: (0 to 0)
+            RecommendationEngine.ArtistAffinity(
+                name = ref.name,
+                browseId = ref.browseId,
+                plays = (local.artists.size - idx).coerceAtLeast(1),
+                skips = skips.first,
+                earlySkips = skips.second,
+                recentlyDiscovered = key in local.discoveredArtists,
+                genres = local.artistGenres[key].orEmpty(),
+            )
+        }
+        val genreMap = LinkedHashMap<String, Double>()
+        local.genres.forEachIndexed { idx, genre ->
+            genreMap[genre.lowercase(Locale.ROOT)] = 1.0 - (idx * 0.15).coerceAtMost(0.7)
+        }
+        for (genres in local.artistGenres.values) {
+            for (g in genres) {
+                val key = g.lowercase(Locale.ROOT)
+                genreMap[key] = maxOf(genreMap[key] ?: 0.0, 0.35)
+            }
+        }
+
+        return RecommendationEngine.ListenerProfile(
+            artists = artistAffinities,
+            tracks = trackMap,
+            recentTrackIds = recentIds,
+            recentRecordings = recentRecs,
+            likedTrackIds = likedIds,
+            favoriteGenres = genreMap,
+            favoriteMoods = local.moodAffinities,
+            discoveredArtists = local.discoveredArtists,
+            artistGenres = local.artistGenres,
+        )
+    }
 
     suspend fun build(
         homeShelves: List<HomeShelf>,
@@ -77,29 +189,24 @@ object TopPicks {
         val mixesAsync = async { findMixes(homeShelves) }
 
         val history = historyAsync.await()
-        val ranked = weightedSample(rankArtists(history, local.artists).take(ARTIST_POOL), ARTISTS)
+        val profile = buildProfile(history, local)
+        latestProfile = profile
+
+        val ranked = weightedSample(rankArtists(history, local, profile).take(ARTIST_POOL), ARTISTS)
         val pages = ranked.map { artist ->
             async { YtMusicRepository.artistLanding(artist.browseId!!).getOrNull() }
         }.awaitAll()
         val artists = ranked.zip(pages).mapNotNull { (ref, page) ->
             page?.let { ArtistCard(it.copy(name = it.name ?: ref.name), ref.browseId!!) }
         }
-            // One person can be two channels (an artist's own and a "Topic"
-            // one, or a spelling of their name); two of them would be the
-            // same face on two cards.
             .distinctBy { normalizedArtistName(it.name) }
-        // Every artist face on the row is Apple Music's photo of them, not
-        // YouTube's channel art: the artists themselves, and the people their
-        // fans also play. Looked up together, a few at a time.
         val photos = applePhotos(artists)
         val mixes = mixesAsync.await()
         Log.d(TAG, "topPicks: history=${history.size} artists=${artists.map { it.name }} mixes=${mixes.keys}")
 
-        // The first card is always the new release when there is one, as on
-        // Apple Music; the rest come in a different order every build.
         val lead = latestRelease(artists)
         val rest = buildList {
-            personalStation(mixes, history, local)?.let(::add)
+            personalStation(mixes, history, local, homeShelves)?.let(::add)
             add(moodPick(now, local))
             artists.getOrNull(0)?.let { andSimilar(it, photos) }?.let(::add)
             artists.getOrNull(1)?.let { featured(it, photos) }?.let(::add)
@@ -115,9 +222,9 @@ object TopPicks {
                 )
             }
             artists.getOrNull(2)?.let { andSimilar(it, photos) }?.let(::add)
-            discoveryStation(mixes, artists, history)?.let(::add)
+            discoveryStation(mixes, artists, history, homeShelves)?.let(::add)
         }.shuffled()
-        listOfNotNull(lead) + rest
+        RecommendationEngine.diversifyTopPicks(listOfNotNull(lead) + rest)
     }
 
     /**
@@ -141,59 +248,76 @@ object TopPicks {
     suspend fun queue(pick: TopPick): Result<List<Song>> {
         if (pick.kind == TopPickKind.MOOD) return moodQueue(pick)
         val target = pick.watch ?: return Result.failure(IllegalStateException("no queue behind ${pick.kind}"))
-        if (pick.kind == TopPickKind.PERSONAL_STATION || pick.kind == TopPickKind.DISCOVERY_STATION) {
-            return freshStation(pick, target)
-        }
-        return YtMusicRepository.watchQueue(target)
+        return freshStation(pick, target)
     }
 
     /**
-     * A Made for You station that sounds different on every tap.
-     *
-     * My Supermix and Discover Mix are rebuilt by YouTube about once a day
-     * and come back in the same order every time they're asked for, so
-     * played as they are, the station opened on the same songs every time.
-     * Here the mix is the core — a random half of it — blended with the
-     * radios of a few tracks drawn at random from the listener's history, and
-     * the whole thing shuffled.
-     *
-     * A Discovery Station leaves out everything already in that history (and
-     * the seed artist, when it's built off an artist's Mix rather than
-     * Discover Mix), so what it adds stays new to the listener.
+     * Ranks any Personalized, Discovery, New Release or Artist station via
+     * [RecommendationEngine] using listener taste, skip fatigue, recency awareness,
+     * and artist spread — instead of raw unranked shuffles.
      */
     private suspend fun freshStation(pick: TopPick, target: WatchTarget): Result<List<Song>> = coroutineScope {
         val mixAsync = async { YtMusicRepository.watchQueue(target) }
         val history = YtMusicRepository.recentHistory().getOrNull().orEmpty()
-        val seeds = history.take(SEED_POOL).shuffled().take(SEED_RADIOS)
-        val radios = seeds.map { seed ->
+        val profile = latestProfile
+
+        val favoriteSeeds = profile.tracks.values
+            .filter { (it.plays > 0 || it.liked) && it.earlySkips == 0 }
+            .sortedByDescending { (if (it.liked) 10 else 0) + it.plays }
+            .take(15)
+            .map { it.videoId }
+        val seedIds = (favoriteSeeds + history.take(SEED_POOL).map { it.videoId })
+            .distinct()
+            .shuffled()
+            .take(SEED_RADIOS)
+
+        val radios = seedIds.map { vid ->
             async {
-                YtMusicRepository.watchQueue(WatchTarget(playlistId = "RDAMVM${seed.videoId}", videoId = seed.videoId))
+                YtMusicRepository.watchQueue(WatchTarget(playlistId = "RDAMVM$vid", videoId = vid))
                     .getOrNull().orEmpty()
             }
         }
         val mix = mixAsync.await().getOrElse { failure ->
-            if (seeds.isEmpty()) return@coroutineScope Result.failure(failure)
+            if (seedIds.isEmpty()) return@coroutineScope Result.failure(failure)
             emptyList()
         }
         val around = radios.awaitAll().flatten()
 
-        val discovery = pick.kind == TopPickKind.DISCOVERY_STATION
-        val heard = if (discovery) history.mapTo(HashSet()) { it.videoId } + pick.exclude else emptySet()
-        val seedArtist = pick.artistName?.takeIf { discovery }?.lowercase(Locale.ROOT)
-        fun keep(song: Song): Boolean =
-            song.videoId !in heard &&
-                (seedArtist == null || !song.artist.lowercase(Locale.ROOT).contains(seedArtist))
-        val core = mix.filter(::keep).shuffled().take(STATION_FROM_MIX)
-        val coreIds = core.mapTo(HashSet()) { it.videoId }
-        val extra = around.filter { keep(it) && it.videoId !in coreIds }
-            .distinctBy { it.videoId }
-            .shuffled()
-            .take(STATION_SIZE - core.size)
-        val station = (core + extra).shuffled()
-        Log.d(TAG, "station ${pick.kind}: mix=${mix.size} core=${core.size} radios=${seeds.size} extra=${extra.size}")
+        val mode = when (pick.kind) {
+            TopPickKind.DISCOVERY_STATION -> RecommendationEngine.RankingMode.DISCOVERY
+            TopPickKind.NEW_RELEASE_MIX -> RecommendationEngine.RankingMode.NEW_RELEASE
+            TopPickKind.ARTIST_AND_SIMILAR, TopPickKind.FEATURED_ARTIST -> RecommendationEngine.RankingMode.ARTIST_STATION
+            else -> RecommendationEngine.RankingMode.SUPERMIX
+        }
+
+        val exclusions = pick.exclude.toHashSet()
+        val seedArtist = pick.artistName?.takeIf { mode == RecommendationEngine.RankingMode.DISCOVERY }?.lowercase(Locale.ROOT)
+        val rawCandidates = (mix.mapIndexed { i, song ->
+            RecommendationEngine.TrackCandidate(
+                song = song,
+                isNewRelease = mode == RecommendationEngine.RankingMode.NEW_RELEASE,
+                sourceOrder = i,
+            )
+        } + around.mapIndexed { i, song ->
+            RecommendationEngine.TrackCandidate(song = song, sourceOrder = mix.size + i)
+        }).filter { c ->
+            c.song.videoId !in exclusions &&
+                (seedArtist == null || !c.song.artist.lowercase(Locale.ROOT).contains(seedArtist))
+        }
+
+        val ranked = RecommendationEngine.rankTracks(
+            candidates = rawCandidates,
+            profile = profile,
+            mode = mode,
+            nowMs = System.currentTimeMillis(),
+            limit = STATION_SIZE,
+            seed = System.nanoTime(),
+        )
+        Log.d(TAG, "station ${pick.kind}: mix=${mix.size} around=${around.size} ranked=${ranked.size}")
         when {
-            station.size >= MIN_FILTERED_QUEUE -> Result.success(station)
-            mix.isNotEmpty() -> Result.success(mix.shuffled())
+            ranked.size >= MIN_FILTERED_QUEUE -> Result.success(ranked)
+            ranked.isNotEmpty() -> Result.success(ranked)
+            mix.isNotEmpty() -> Result.success(mix.shuffled().take(STATION_SIZE))
             else -> Result.failure(IllegalStateException("${pick.kind} came back empty"))
         }
     }
@@ -283,13 +407,26 @@ object TopPicks {
         )
     }
 
-    private fun personalStation(mixes: Map<Mix, ShelfItem>, history: List<Song>, local: LocalTaste): TopPick? {
+    private fun personalStation(
+        mixes: Map<Mix, ShelfItem>,
+        history: List<Song>,
+        local: LocalTaste,
+        homeShelves: List<HomeShelf>,
+    ): TopPick? {
+        val homeFallbackTrack = homeShelves
+            .filterNot {
+                val t = it.title.lowercase(Locale.ROOT)
+                "recent" in t || "history" in t || "listen again" in t
+            }
+            .flatMap { it.items }
+            .firstOrNull { it.videoId != null }
+            ?.videoId
+
         val watch = mixes[Mix.SUPERMIX]?.watchTarget()
-            // No Supermix (signed out, or a feed without one): a radio off the
-            // track the listener plays most, which is the same idea built by hand.
-            ?: (local.songs.firstOrNull() ?: history.firstOrNull())?.let { song ->
+            ?: (local.songs.firstOrNull() ?: local.likedSongs.firstOrNull() ?: history.firstOrNull())?.let { song ->
                 WatchTarget(playlistId = "RDAMVM${song.videoId}", videoId = song.videoId)
             }
+            ?: homeFallbackTrack?.let { vid -> WatchTarget(playlistId = "RDAMVM$vid", videoId = vid) }
             ?: return null
         return TopPick(kind = TopPickKind.PERSONAL_STATION, watch = watch)
     }
@@ -297,7 +434,7 @@ object TopPicks {
     private fun moodPick(now: LocalDateTime, local: LocalTaste): TopPick =
         TopPick(
             kind = TopPickKind.MOOD,
-            mood = moodFor(now),
+            mood = moodFor(now, local),
             hints = (local.genres.map { it.lowercase(Locale.ROOT) } + regionHints()).distinct(),
         )
 
@@ -339,18 +476,34 @@ object TopPicks {
         mixes: Map<Mix, ShelfItem>,
         artists: List<ArtistCard>,
         history: List<Song>,
+        homeShelves: List<HomeShelf>,
     ): TopPick? {
         mixes[Mix.DISCOVER]?.watchTarget()?.let { watch ->
             return TopPick(kind = TopPickKind.DISCOVERY_STATION, watch = watch)
         }
-        // No Discover Mix: the top artist's Mix with everything already heard
-        // filtered out at play time — see [queue].
-        val seed = artists.firstOrNull() ?: return null
-        val radio = seed.page.radio ?: return null
+        val seed = artists.firstOrNull()
+        val radio = seed?.page?.radio
+        if (seed != null && radio != null) {
+            return TopPick(
+                kind = TopPickKind.DISCOVERY_STATION,
+                artistName = seed.name,
+                watch = radio,
+                exclude = history.take(200).map { it.videoId },
+            )
+        }
+        // Cold-start fallback: build a discovery radio from an explore/new-release track on Home
+        val exploreVideo = homeShelves
+            .filter {
+                val t = it.title.lowercase(Locale.ROOT)
+                "new" in t || "quick" in t || "recommend" in t || "chart" in t
+            }
+            .flatMap { it.items }
+            .firstOrNull { it.videoId != null }
+            ?.videoId
+            ?: return null
         return TopPick(
             kind = TopPickKind.DISCOVERY_STATION,
-            artistName = seed.name,
-            watch = radio,
+            watch = WatchTarget(playlistId = "RDAMVM$exploreVideo", videoId = exploreVideo),
             exclude = history.take(200).map { it.videoId },
         )
     }
@@ -358,18 +511,29 @@ object TopPicks {
     // ---- Artists ------------------------------------------------------------
 
     /**
-     * The listener's artists, best first. Each history row counts once, with
-     * a little extra the more recent it is; the app's own chart adds a smaller
-     * share by position. Only artists with a channel id take part — a card
-     * needs the page, and a bare name would need a search to find one.
+     * The listener's artists, best first. Combines YTM history, local replay stats,
+     * liked songs, recently discovered artist boost, and early-skip attenuation.
      */
-    private fun rankArtists(history: List<Song>, local: List<ArtistRef>): List<ArtistRef> {
+    private fun rankArtists(
+        history: List<Song>,
+        local: LocalTaste,
+        profile: RecommendationEngine.ListenerProfile = latestProfile,
+    ): List<ArtistRef> {
         val scores = LinkedHashMap<String, Pair<String, Double>>()
+        val skipByName = mutableMapOf<String, Int>()
+        for (tf in local.trackStats) {
+            for (a in RecommendationEngine.artistSet(tf.artist)) {
+                skipByName[a] = (skipByName[a] ?: 0) + tf.earlySkips
+            }
+        }
         fun credit(id: String?, name: String, weight: Double) {
             if (id == null || !id.startsWith("UC") || name.isBlank()) return
             if (name.equals("Various Artists", ignoreCase = true)) return
+            val key = normalizedArtistName(name)
+            val skipPenalty = (skipByName[key] ?: 0) * 0.45
+            val discoveryBonus = if (key in profile.discoveredArtists) 0.35 else 0.0
             val (_, score) = scores[id] ?: (name to 0.0)
-            scores[id] = name to score + weight
+            scores[id] = name to (score + weight + discoveryBonus - skipPenalty).coerceAtLeast(0.05)
         }
         history.forEachIndexed { index, song ->
             val recency = 1.0 - index.toDouble() / history.size.coerceAtLeast(1)
@@ -377,8 +541,13 @@ object TopPicks {
             if (lead != null) credit(lead.browseId, lead.name, 1.0 + recency * 0.5)
             else credit(song.artistId, song.artist, 1.0 + recency * 0.5)
         }
-        local.forEachIndexed { index, artist ->
-            credit(artist.browseId, artist.name, (local.size - index).toDouble() * 0.5)
+        local.likedSongs.forEach { song ->
+            val lead = song.artists.firstOrNull { it.browseId != null }
+            if (lead != null) credit(lead.browseId, lead.name, 1.1)
+            else credit(song.artistId, song.artist, 1.1)
+        }
+        local.artists.forEachIndexed { index, artist ->
+            credit(artist.browseId, artist.name, (local.artists.size - index).toDouble() * 0.6)
         }
         return scores.entries
             .sortedByDescending { it.value.second }
@@ -429,63 +598,124 @@ object TopPicks {
      * them. Only Apple's seven Find Your Mood moods, as on Apple Music's own
      * Top Picks — the activities live in Find Your Mood's Show all.
      */
-    fun moodFor(now: LocalDateTime): TopPickMood {
-        val suited = when (now.hour) {
-            in 5..8 -> listOf(TopPickMood.ENERGY, TopPickMood.FEEL_GOOD, TopPickMood.FOCUS)
-            in 9..11 -> listOf(TopPickMood.FOCUS, TopPickMood.FEEL_GOOD, TopPickMood.ENERGY)
-            in 12..16 -> listOf(TopPickMood.FEEL_GOOD, TopPickMood.FOCUS, TopPickMood.ENERGY, TopPickMood.RELAX)
-            in 17..19 -> listOf(TopPickMood.ENERGY, TopPickMood.FEEL_GOOD, TopPickMood.RELAX)
-            in 20..22 -> listOf(TopPickMood.LOVE, TopPickMood.RELAX, TopPickMood.HEARTBREAK, TopPickMood.FEEL_GOOD)
-            else -> listOf(TopPickMood.RELAX, TopPickMood.FEELING_BLUE, TopPickMood.HEARTBREAK, TopPickMood.LOVE)
+    fun moodFor(now: LocalDateTime, local: LocalTaste = LocalTaste()): TopPickMood {
+        val profile = if (local.moodAffinities.isNotEmpty()) {
+            latestProfile.copy(favoriteMoods = local.moodAffinities)
+        } else {
+            latestProfile
         }
-        return if (Random.nextFloat() < 0.7f) suited.random()
-        else TopPickMood.entries.filter { it.isCoreMood }.random()
+        return RecommendationEngine.chooseFeaturedMood(now.hour, profile)
     }
 
     /**
-     * A mood's queue: the mood's own playlists, played as they are and
-     * shuffled together. Not a playlist *radio* — a radio wanders off to
-     * whatever sounds like the seed, and a Love station drifted into plain
-     * feel-good pop within a few tracks.
-     *
-     * The category is shelves of playlists by scene ("Romantic Bollywood &
-     * Indian", "Pop romance", …). A shelf naming the listener's own scene
-     * wins; two of its playlists are drawn at random and mixed.
+     * Builds a personalized, non-repetitive mood queue:
+     * 1. Scores ALL shelves & playlists in the mood category against keywords, regional hints,
+     *    and listener genres, sampling varied playlists so consecutive opens sound fresh.
+     * 2. Falls back to targeted playlist/track search if the YTM category returns sparse content.
+     * 3. Mixes a personal favorite seed radio (if taste history exists) alongside discoveries.
+     * 4. Runs [RecommendationEngine.rankTracks] with contradiction filtering, skip penalties,
+     *    recency fatigue, artist spread caps, and opener rotation.
      */
     private suspend fun moodQueue(pick: TopPick): Result<List<Song>> = coroutineScope {
         val mood = pick.mood ?: return@coroutineScope Result.failure(IllegalStateException("mood card without a mood"))
+        val profile = latestProfile
         val shelves = YtMusicRepository.moodGenreShelves(TopPickMood.CATEGORY_BROWSE_ID, mood.params)
-            .getOrElse { return@coroutineScope Result.failure(it) }
-        val playlists = { shelf: HomeShelf -> shelf.items.filter { it.browseId?.startsWith("VL") == true } }
-        val candidates = shelves.filter { playlists(it).isNotEmpty() }
-        val score = { shelf: HomeShelf ->
-            val title = shelf.title.lowercase(Locale.ROOT)
-            2 * mood.shelfWords.count { it in title } + pick.hints.count { it.isNotBlank() && it in title }
+            .getOrElse { emptyList() }
+        val chosen = RecommendationEngine.selectMoodPlaylists(
+            shelves = shelves,
+            mood = mood,
+            hints = pick.hints,
+            profile = profile,
+            limit = MOOD_PLAYLISTS,
+        )
+
+        val candidates = mutableListOf<RecommendationEngine.TrackCandidate>()
+        if (chosen.isNotEmpty()) {
+            val loaded = chosen.map { item ->
+                async {
+                    val browseId = item.browseId ?: return@async emptyList()
+                    val playlistId = browseId.removePrefix("VL")
+                    val tracks = YtMusicRepository.playlistAsAudio(playlistId).getOrNull()?.takeIf { it.isNotEmpty() }
+                        ?: YtMusicRepository.browseSongs(browseId).getOrNull()?.songs.orEmpty()
+                    tracks.mapIndexed { idx, song ->
+                        RecommendationEngine.TrackCandidate(
+                            song = song,
+                            sourcePlaylistTitle = item.title,
+                            sourcePlaylistSubtitle = item.subtitle,
+                            sourceOrder = idx,
+                        )
+                    }
+                }
+            }.awaitAll().flatten()
+            candidates += loaded
         }
-        val best = candidates.maxOfOrNull(score)
-            ?: return@coroutineScope Result.failure(IllegalStateException("no playlists for $mood"))
-        // With no scene in common, any shelf of the mood will do.
-        val shelf = candidates.filter { score(it) == best }.random()
-        val chosen = playlists(shelf).take(6).shuffled().take(MOOD_PLAYLISTS)
-        val songs = chosen.map { item ->
-            async {
-                val playlistId = item.browseId!!.removePrefix("VL")
-                // As a watch queue, so YouTube hands over each official video's
-                // song version directly; the playlist page only lists videos.
-                YtMusicRepository.playlistAsAudio(playlistId).getOrNull()?.takeIf { it.isNotEmpty() }
-                    ?: YtMusicRepository.browseSongs(item.browseId!!).getOrNull()?.songs.orEmpty()
+
+        // Graceful fallback when YTM category shelves return too few songs
+        if (candidates.size < MIN_FILTERED_QUEUE) {
+            val rule = RecommendationEngine.ruleFor(mood)
+            for (query in rule.fallbackSearchQueries) {
+                val hits = YtMusicRepository.search(query, SearchFilter.PLAYLISTS).getOrNull().orEmpty()
+                val plItem = hits.filterIsInstance<SearchResult.Browse>().firstOrNull()?.item
+                if (plItem != null) {
+                    val pid = plItem.browseId.removePrefix("VL")
+                    val tracks = YtMusicRepository.playlistAsAudio(pid).getOrNull()?.takeIf { it.isNotEmpty() }
+                        ?: YtMusicRepository.browseSongs(plItem.browseId).getOrNull()?.songs.orEmpty()
+                    candidates += tracks.mapIndexed { idx, song ->
+                        RecommendationEngine.TrackCandidate(
+                            song = song,
+                            sourcePlaylistTitle = plItem.title,
+                            sourcePlaylistSubtitle = plItem.subtitle,
+                            sourceOrder = idx,
+                        )
+                    }
+                }
+                if (candidates.size >= MIN_FILTERED_QUEUE * 2) break
             }
-        }.awaitAll().flatten()
-            // A row YouTube couldn't pair stays the video, and plays as one;
-            // the player menu's version switch turns it into the song.
-            .distinctBy { it.videoId }
-            .shuffled()
-            .take(MOOD_QUEUE)
-        if (songs.isEmpty()) Result.failure(IllegalStateException("$mood playlists were empty"))
-        else Result.success(songs)
+        }
+
+        // Mix one personal favorite seed radio (without letting it dominate non-compatible moods)
+        val favSeed = profile.tracks.values
+            .filter { (it.plays > 0 || it.liked) && it.earlySkips == 0 }
+            .sortedByDescending { (if (it.liked) 10 else 0) + it.plays }
+            .firstOrNull()
+        if (favSeed != null) {
+            YtMusicRepository.watchQueue(WatchTarget(playlistId = "RDAMVM${favSeed.videoId}", videoId = favSeed.videoId))
+                .getOrNull()
+                ?.take(15)
+                ?.forEachIndexed { idx, song ->
+                    candidates += RecommendationEngine.TrackCandidate(
+                        song = song,
+                        isFamiliarSeed = true,
+                        sourceOrder = 1000 + idx,
+                    )
+                }
+        }
+
+        val openers = recentMoodOpeners[mood].orEmpty()
+        val ranked = RecommendationEngine.rankTracks(
+            candidates = candidates,
+            profile = profile,
+            mode = RecommendationEngine.RankingMode.MOOD,
+            mood = mood,
+            recentOpeners = openers,
+            nowMs = System.currentTimeMillis(),
+            limit = MOOD_QUEUE,
+            seed = System.nanoTime(),
+        )
+
+        if (ranked.isNotEmpty()) {
+            val historySet = recentMoodOpeners.computeIfAbsent(mood) { java.util.Collections.synchronizedSet(LinkedHashSet()) }
+            if (historySet.size > 20) historySet.clear()
+            ranked.take(5).forEach { historySet += it.videoId }
+            return@coroutineScope Result.success(ranked)
+        }
+
+        val fallbackRaw = candidates.map { it.song }.distinctBy { it.videoId }.shuffled().take(MOOD_QUEUE)
+        if (fallbackRaw.isEmpty()) Result.failure(IllegalStateException("$mood playlists were empty"))
+        else Result.success(fallbackRaw)
     }
 
-    private const val MOOD_PLAYLISTS = 3
+    private const val MOOD_PLAYLISTS = 4
     private const val MOOD_QUEUE = 60
 
     /**

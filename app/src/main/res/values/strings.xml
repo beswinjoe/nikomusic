@@ -436,6 +436,7 @@
     <string name="high">High</string>
     <string name="standard">Standard</string>
     <string name="lossless">Lossless</string>
+    <string name="hi_res_lossless">Hi-Res Lossless</string>
     <string name="system">System</string>
     <string name="light">Light</string>
     <string name="dark">Dark</string>

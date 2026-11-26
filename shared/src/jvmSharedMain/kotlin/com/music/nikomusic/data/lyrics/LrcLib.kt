@@ -65,10 +65,24 @@ object LrcLib {
         val body = get(url.toString()) ?: return null
         val hits = json.parseToJsonElement(body) as? JsonArray ?: return null
         return hits.mapNotNull { it as? JsonObject }
-            .filter { it["syncedLyrics"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true }
-            .minByOrNull {
-                val d = it["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0
-                abs(d - seconds)
+            .filter { hit ->
+                if (hit["syncedLyrics"]?.jsonPrimitive?.contentOrNull?.isNotBlank() != true) return@filter false
+                val hitTitle = hit["trackName"]?.jsonPrimitive?.contentOrNull
+                val hitArtist = hit["artistName"]?.jsonPrimitive?.contentOrNull
+                if (hitTitle != null && (!lyricsTitleMatches(hitTitle, title) || !isLyricsVersionCompatible(title, hitTitle))) {
+                    return@filter false
+                }
+                if (artist.isNotBlank() && !hitArtist.isNullOrBlank() && !lyricsArtistMatches(hitArtist, artist)) {
+                    return@filter false
+                }
+                val d = hit["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+                seconds <= 0 || d <= 0.0 || abs(d - seconds) <= 12.0
+            }
+            .minByOrNull { hit ->
+                val hitTitle = hit["trackName"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val exactTitlePenalty = if (normalizeLyricsMatchText(hitTitle) == normalizeLyricsMatchText(title)) 0.0 else 5.0
+                val d = hit["duration"]?.jsonPrimitive?.doubleOrNull ?: seconds.toDouble()
+                exactTitlePenalty + if (seconds > 0 && d > 0.0) abs(d - seconds) else 0.0
             }
             ?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
     }

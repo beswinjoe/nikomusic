@@ -17,6 +17,13 @@ import {
   type ResolvedPlayer,
 } from './resolver';
 import { ShakaPlayerAdapter } from './ShakaPlayerAdapter';
+import {
+  browserSupportsDolbyAtmos,
+  buildPreferredCodecs,
+  DEFAULT_AUDIO_QUALITY,
+  pickAudioVariant,
+  type AudioQualityTier,
+} from '../audioQuality';
 
 /** What the engine knows about the track it loaded. */
 export interface LoadedTrack {
@@ -62,6 +69,15 @@ export interface VideoStream {
  */
 const MIN_VIDEO_ASPECT = 1.2;
 
+export function toBase64Utf8(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
 export class SupersededError extends Error {
   override readonly name = 'SupersededError';
 }
@@ -93,6 +109,11 @@ export class YouTubeEngine {
   /** The response the playing track streams from, when it has direct URLs; the video picture comes from it too. */
   private direct: ResolvedPlayer | null = null;
   private preferredCodecs: string[];
+  private opusSupported: boolean;
+  private eac3Supported: boolean;
+  private ac3Supported: boolean;
+  private audioQuality: AudioQualityTier = DEFAULT_AUDIO_QUALITY;
+  private dolbyAtmos = true;
 
   /** Raised when a track can't be played at all, after every fallback. */
   onFatal: (videoId: string, message: string, permanent: boolean) => void = () => {};
@@ -101,10 +122,41 @@ export class YouTubeEngine {
 
   constructor(audio: HTMLAudioElement) {
     this.audio = audio;
-    // Opus (itag 251) when the browser can decode it in MSE, AAC (140)
-    // otherwise, which is Safari: unsupported, but it must not crash.
-    const opus = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/webm; codecs="opus"');
-    this.preferredCodecs = opus ? ['opus', 'mp4a'] : ['mp4a'];
+    this.opusSupported = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/webm; codecs="opus"');
+    const atmos = browserSupportsDolbyAtmos();
+    this.eac3Supported = atmos.eac3;
+    this.ac3Supported = atmos.ac3;
+    this.preferredCodecs = buildPreferredCodecs({
+      dolbyAtmos: this.dolbyAtmos,
+      opusSupported: this.opusSupported,
+      eac3Supported: this.eac3Supported,
+      ac3Supported: this.ac3Supported,
+    });
+  }
+
+  /** Updates streaming quality ceiling and Dolby Atmos E-AC-3 preference immediately for future & active selections. */
+  get loadedVideoId(): string | null {
+    return this.current?.videoId ?? null;
+  }
+
+  setAudioPreferences({
+    audioQuality,
+    dolbyAtmos,
+  }: {
+    audioQuality: AudioQualityTier;
+    dolbyAtmos: boolean;
+  }): void {
+    this.audioQuality = audioQuality;
+    this.dolbyAtmos = dolbyAtmos;
+    this.preferredCodecs = buildPreferredCodecs({
+      dolbyAtmos,
+      opusSupported: this.opusSupported,
+      eac3Supported: this.eac3Supported,
+      ac3Supported: this.ac3Supported,
+    });
+    if (this.player) {
+      this.player.configure({ preferredAudioCodecs: this.preferredCodecs });
+    }
   }
 
   private async ensurePlayer(): Promise<shaka.Player> {
@@ -235,7 +287,7 @@ export class YouTubeEngine {
     const mode = direct ? 'direct' : 'SABR';
 
     await timed(`${client} ${mode} load`, videoId, () =>
-      player.load(`data:application/dash+xml;base64,${btoa(manifest)}`, startSec, 'application/dash+xml'),
+      player.load(`data:application/dash+xml;base64,${toBase64Utf8(manifest)}`, startSec, 'application/dash+xml'),
     );
     this.checkCurrent(generation);
     const selected = this.selectAudio(player);
@@ -312,7 +364,33 @@ export class YouTubeEngine {
    * manifest cut down to them.
    */
   async videoStream(height: number | null = null): Promise<VideoStream | null> {
-    const resolved = this.direct;
+    let resolved = this.direct;
+    // Signed-in playback leads with YTMUSIC over SABR (`this.direct` is null).
+    // Fetch direct formats from a direct client for the active track so video playback works signed-in too.
+    if (!resolved && this.current) {
+      const { videoId } = this.current;
+      const yt = this.yt ?? (await getInnertube().catch(() => null));
+      if (yt) {
+        const { Utils, YT } = await import('youtubei.js/web');
+        for (const directClient of ['VISIONOS', 'WEB', 'MWEB'] as const) {
+          try {
+            const response = await playerRequest(yt, videoId, directClient);
+            const info = new YT.VideoInfo([response], yt.actions, Utils.generateRandomString(16));
+            const hasPics = (info.streaming_data?.adaptive_formats ?? []).some(
+              (f) => f.has_video && !f.has_audio && f.width && f.height && (f.url || f.signature_cipher || f.cipher),
+            );
+            if (info.playability_status?.status === 'OK' && hasPics) {
+              const directVideo: ResolvedPlayer = { videoId, client: directClient, info, yt, signed: false };
+              if (this.current?.videoId === videoId) this.direct = directVideo;
+              resolved = directVideo;
+              break;
+            }
+          } catch {
+            // Try next direct client
+          }
+        }
+      }
+    }
     if (!resolved) return null;
     const { videoId, client, info } = resolved;
     const pictures = (info.streaming_data?.adaptive_formats ?? []).filter(
@@ -390,9 +468,9 @@ export class YouTubeEngine {
     });
   }
 
-  /** Picks Opus 251 (else AAC 140): the preferred codec's highest bitrate, avoiding DRC renditions. */
+  /** Picks optimal rendition honoring Dolby Atmos (E-AC-3/AC-3) and configured AudioQuality ceiling, avoiding DRC. */
   private selectAudio(player: shaka.Player): { label: string; stats: Omit<StreamStats, 'mode'> } {
-    const tracks = player.getVariantTracks().filter((t) => !/drc/i.test(t.originalAudioId ?? ''));
+    const tracks = player.getVariantTracks();
     const statsOf = (t: shaka.extern.Track) => ({
       codec: codecName(t.audioCodec),
       itag: (t.originalAudioId ?? '').split('-')[0] || null,
@@ -400,17 +478,18 @@ export class YouTubeEngine {
       sampleRateHz: t.audioSamplingRate,
       channels: t.channelsCount,
     });
-    for (const codec of this.preferredCodecs) {
-      const best = tracks
-        .filter((t) => t.audioCodec?.startsWith(codec))
-        .sort((a, b) => (b.audioBandwidth ?? b.bandwidth) - (a.audioBandwidth ?? a.bandwidth))[0];
-      if (best) {
-        if (!best.active) player.selectVariantTrack(best, true);
-        const itag = (best.originalAudioId ?? '').split('-')[0];
-        return { label: `${itag} ${codec} ${Math.round((best.audioBandwidth ?? best.bandwidth) / 1000)}kbps`, stats: statsOf(best) };
-      }
+    const best = pickAudioVariant(tracks, {
+      preferredCodecs: this.preferredCodecs,
+      quality: this.audioQuality,
+      dolbyAtmos: this.dolbyAtmos,
+    });
+    if (best) {
+      if (!best.active) player.selectVariantTrack(best, true);
+      const itag = (best.originalAudioId ?? '').split('-')[0];
+      const kbps = Math.round((best.audioBandwidth ?? best.bandwidth) / 1000);
+      return { label: `${itag} ${codecName(best.audioCodec) ?? best.audioCodec} ${kbps}kbps`, stats: statsOf(best) };
     }
-    const active = player.getVariantTracks().find((t) => t.active);
+    const active = tracks.find((t) => t.active);
     return active
       ? { label: `${active.originalAudioId} ${active.audioCodec}`, stats: statsOf(active) }
       : { label: 'unknown', stats: { codec: null, itag: null, bitrateKbps: null, sampleRateHz: null, channels: null } };

@@ -825,7 +825,7 @@ private fun TextureView.applyContentTransform(
  * the older way, with a saveLayer and a Porter-Duff mask.
  */
 @RequiresApi(Build.VERSION_CODES.S)
-private fun createBottomFade(fraction: Float, bounds: IntSize, endPx: Float?): LinearGradient? {
+internal fun createBottomFade(fraction: Float, bounds: IntSize, endPx: Float?): LinearGradient? {
     val endY = endPx?.coerceIn(0f, bounds.height.toFloat()) ?: bounds.height.toFloat()
     if (fraction <= 0.001f || endY <= 0f) return null
     // Along smootherstep, as the still sleeve's banner dissolves, so the clip
@@ -900,7 +900,7 @@ private class AppliedLook {
     }
 }
 
-private class FadingBottomFrame(context: Context) : FrameLayout(context) {
+internal class FadingBottomFrame(context: Context) : FrameLayout(context) {
     /** See [AppliedLook]. */
     val applied = AppliedLook()
     private var bottomShader: LinearGradient? = null

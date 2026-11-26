@@ -551,6 +551,131 @@ object ListeningStats {
         }
     }
 
+    /**
+     * Records a manual forward skip so recommendation ranking can penalize tracks
+     * the listener consistently skips early, while treating occasional late skips softly.
+     */
+    fun recordSkip(song: Song, playedMs: Long, durationMs: Long) {
+        if (!ready || song.videoId.isBlank()) return
+        val now = System.currentTimeMillis()
+        val earlySkip = playedMs in 1_000L until 30_000L &&
+            (durationMs <= 0L || (durationMs >= 35_000L && playedMs * 100L < durationMs * 35L))
+        val leadArtist = primaryArtist(song.artist) ?: song.artist.takeIf { it.isNotBlank() }
+        synchronized(lock) {
+            val bucket = bucketFor(YearMonth.now())
+            val track = bucket.tracks.getOrPut(song.videoId) {
+                TrackEntry(
+                    id = song.videoId,
+                    title = song.title,
+                    artist = song.artist,
+                    album = song.albumName,
+                    albumId = song.albumId,
+                    artistId = song.artistId,
+                    art = song.thumbnailUrl,
+                )
+            }
+            track.skips += 1
+            if (earlySkip) track.earlySkips += 1
+            track.lastSkippedAt = now
+
+            if (leadArtist != null) {
+                val key = leadArtist.lowercase(Locale.ROOT)
+                val artistEntry = bucket.artists.getOrPut(key) {
+                    NameEntry(name = leadArtist, id = song.artistId, art = song.thumbnailUrl)
+                }
+                artistEntry.skips += 1
+                if (earlySkip) artistEntry.earlySkips += 1
+            }
+            dirty = true
+            version++
+            cached = null
+        }
+    }
+
+    /** Records an explicit mood tile tap to personalize future mood highlights. */
+    fun recordMoodSelection(moodName: String) {
+        if (!ready || moodName.isBlank()) return
+        synchronized(lock) {
+            val bucket = bucketFor(YearMonth.now())
+            bucket.moodCounts[moodName] = (bucket.moodCounts[moodName] ?: 0) + 1
+            dirty = true
+        }
+    }
+
+    /** Snapshot of rich local taste signals for [TopPicks] & [RecommendationEngine]. */
+    data class TasteSnapshot(
+        val recentSongIds: Set<String> = emptySet(),
+        val trackStats: List<com.music.nikomusic.data.RecommendationEngine.TrackFeedback> = emptyList(),
+        val artistGenres: Map<String, List<String>> = emptyMap(),
+        val moodCounts: Map<String, Int> = emptyMap(),
+        val discoveredArtists: Set<String> = emptySet(),
+    )
+
+    suspend fun tasteSnapshot(): TasteSnapshot = withContext(Dispatchers.IO) {
+        if (!ready) return@withContext TasteSnapshot()
+        flushAndAwait()
+        val now = YearMonth.now()
+        val prevMonth = now.minusMonths(1)
+        val currentBuckets = bucketsOf(now)
+        val prevBuckets = bucketsOf(prevMonth)
+        val olderArtists = bucketsOf(now.minusMonths(2)).flatMap { it.artists }.mapTo(HashSet()) { it.name.lowercase(Locale.ROOT) }
+        prevBuckets.flatMapTo(olderArtists) { it.artists.map { a -> a.name.lowercase(Locale.ROOT) } }
+
+        val mergedTracks = LinkedHashMap<String, TrackEntry>()
+        (prevBuckets + currentBuckets).forEach { b ->
+            b.tracks.forEach { t ->
+                mergedTracks.merge(mergeKey(t), t.copy()) { a, o -> a.also { it.absorb(o) } }
+            }
+        }
+        val sortedByRecency = mergedTracks.values.sortedByDescending { it.last }
+        val recentIds = sortedByRecency.take(35).mapTo(LinkedHashSet()) { it.id }
+
+        val trackFeedback = mergedTracks.values.map { t ->
+            com.music.nikomusic.data.RecommendationEngine.TrackFeedback(
+                videoId = t.id,
+                title = t.title,
+                artist = t.artist,
+                plays = t.plays,
+                totalMs = t.ms,
+                skips = t.skips,
+                earlySkips = t.earlySkips,
+                lastPlayedMs = t.last,
+                lastSkippedMs = t.lastSkippedAt,
+            )
+        }
+
+        val currentArtists = currentBuckets.flatMap { it.artists }.filter { it.plays > 0 }
+        val discovered = currentArtists
+            .map { it.name.lowercase(Locale.ROOT) }
+            .filterTo(HashSet()) { it !in olderArtists }
+
+        val artistGenres = LinkedHashMap<String, List<String>>()
+        (currentArtists + prevBuckets.flatMap { it.artists })
+            .distinctBy { it.name.lowercase(Locale.ROOT) }
+            .take(50)
+            .forEach { entry ->
+                val genres = ArtistFacts.genresFor(entry.name)
+                if (genres.isNotEmpty()) {
+                    artistGenres[entry.name.lowercase(Locale.ROOT)] = genres
+                }
+            }
+
+        val moodCounts = LinkedHashMap<String, Int>()
+        (prevBuckets + currentBuckets).forEach { b ->
+            b.moodCounts.forEach { (mood, count) ->
+                moodCounts[mood] = (moodCounts[mood] ?: 0) + count
+            }
+        }
+
+        TasteSnapshot(
+            recentSongIds = recentIds,
+            trackStats = trackFeedback,
+            artistGenres = artistGenres,
+            moodCounts = moodCounts,
+            discoveredArtists = discovered,
+        )
+    }
+
     // ── Shapes ──────────────────────────────────────────────────────────────
 
     /**
@@ -572,6 +697,7 @@ object ListeningStats {
         val trackDays: MutableMap<String, DayStats> = mutableMapOf(),
         val artistDays: MutableMap<String, DayStats> = mutableMapOf(),
         val albumDays: MutableMap<String, DayStats> = mutableMapOf(),
+        val moodCounts: MutableMap<String, Int> = mutableMapOf(),
     ) {
         fun snapshot() = StoredBucket(
             month = key,
@@ -583,6 +709,7 @@ object ListeningStats {
             trackDays = trackDays.mapValues { it.value },
             artistDays = artistDays.mapValues { it.value },
             albumDays = albumDays.mapValues { it.value },
+            moodCounts = moodCounts.toMap(),
         )
 
         companion object {
@@ -601,6 +728,7 @@ object ListeningStats {
                 trackDays = stored.trackDays?.toMutableMap() ?: mutableMapOf(),
                 artistDays = stored.artistDays?.toMutableMap() ?: mutableMapOf(),
                 albumDays = stored.albumDays?.toMutableMap() ?: mutableMapOf(),
+                moodCounts = stored.moodCounts.toMutableMap(),
             )
         }
     }
@@ -992,6 +1120,9 @@ data class TrackEntry(
     var ms: Long = 0L,
     var plays: Int = 0,
     var last: Long = 0L,
+    var skips: Int = 0,
+    var earlySkips: Int = 0,
+    var lastSkippedAt: Long = 0L,
     /** Per-day breakdown for weekly queries. Key: "YYYY-MM-DD". */
     var days: MutableMap<String, DayStats> = mutableMapOf(),
 ) {
@@ -999,6 +1130,9 @@ data class TrackEntry(
         ms += other.ms
         plays += other.plays
         last = maxOf(last, other.last)
+        skips += other.skips
+        earlySkips += other.earlySkips
+        lastSkippedAt = maxOf(lastSkippedAt, other.lastSkippedAt)
         if (album == null) album = other.album
         if (albumId == null) albumId = other.albumId
         if (artistId == null) artistId = other.artistId
@@ -1056,12 +1190,16 @@ data class NameEntry(
     var ms: Long = 0L,
     var plays: Int = 0,
     val key: String? = null,
+    var skips: Int = 0,
+    var earlySkips: Int = 0,
     /** Per-day breakdown for weekly queries. Key: "YYYY-MM-DD". */
     var days: MutableMap<String, DayStats> = mutableMapOf(),
 ) {
     fun absorb(other: NameEntry) {
         ms += other.ms
         plays += other.plays
+        skips += other.skips
+        earlySkips += other.earlySkips
         if (art == null) art = other.art
         if (id == null) id = other.id
         // Merge per-day sub-buckets.
@@ -1113,6 +1251,8 @@ data class StoredBucket(
     val artistDays: Map<String, DayStats>? = null,
     /** Per-day sub-buckets for albums. Key: "YYYY-MM-DD". */
     val albumDays: Map<String, DayStats>? = null,
+    /** Selected mood counts for personalized mood suggestions. */
+    val moodCounts: Map<String, Int> = emptyMap(),
 )
 
 /** A row on one of the four charts. */

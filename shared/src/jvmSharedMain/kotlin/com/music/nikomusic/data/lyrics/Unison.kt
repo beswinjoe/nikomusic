@@ -49,7 +49,16 @@ object Unison {
         val response = runCatching { lyricsJson.decodeFromString<Response>(body) }.getOrNull()
             ?: return@withContext null
         if (response.success != true) return@withContext null
-        linesOf(response.data ?: return@withContext null)
+        val entry = response.data ?: return@withContext null
+        val entrySong = entry.song?.trim().orEmpty()
+        if (entrySong.isNotEmpty() && (!lyricsTitleMatches(entrySong, title) || !isLyricsVersionCompatible(title, entrySong))) {
+            return@withContext null
+        }
+        val entryArtist = entry.artist?.trim().orEmpty()
+        if (entryArtist.isNotEmpty() && artist.isNotBlank() && !lyricsArtistMatches(entryArtist, artist)) {
+            return@withContext null
+        }
+        linesOf(entry)
     }
 
     /** The three shapes, told apart by what the entry says it is. */

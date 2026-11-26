@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { YTMusic } from 'youtubei.js';
-import { firstBrowseArtwork, mapAlbum, mapArtist, mapCategories, mapHome, mapPlaylist, mapSearch, mapShelves, mapSuggestions } from './mappers';
+import { firstBrowseArtwork, mapAlbum, mapArtist, mapBrowse, mapCategories, mapHome, mapItem, mapPlaylist, mapSearch, mapShelves, mapSuggestions } from './mappers';
 import type { BrowsePage } from './types';
 
 // Real responses captured by web/scripts/capture-fixtures.mjs (prompt §0:
@@ -153,5 +153,56 @@ describe('categories', () => {
     expect(firstBrowseArtwork({ ...page, shelves: [] })).toEqual({ thumbnail: 'https://img/grid-cover.jpg', wide: true });
     expect(firstBrowseArtwork({ ...page, shelves: [], grid: [] })).toEqual({ thumbnail: 'https://img/track-cover.jpg', wide: false });
     expect(firstBrowseArtwork({ title: '', shelves: [], grid: [], tracks: [] })).toBeNull();
+  });
+});
+
+describe('library albums mapping', () => {
+  it('unwraps MPLA album wrappers and prefers album kind over heuristical video guesses', () => {
+    const wrapped = mapItem({
+      type: 'MusicTwoRowItem',
+      title: { text: 'Currents' },
+      subtitle: { text: 'Tame Impala • 2015' },
+      item_type: 'video',
+      thumbnail: [{ url: 'https://img/currents.jpg', width: 544, height: 544 }],
+      endpoint: { payload: { browseId: 'MPLAMPREb_currents123' } },
+      badges: [],
+    } as never);
+    expect(wrapped).not.toBeNull();
+    expect(wrapped!.kind).toBe('album');
+    expect(wrapped!.id).toBe('MPREb_currents123');
+    expect(wrapped!.wide).toBe(false);
+
+    const privRelease = mapItem({
+      type: 'MusicResponsiveListItem',
+      title: 'Private Demo',
+      subtitle: { text: 'Album • 2024' },
+      item_type: 'endpoint',
+      thumbnail: [],
+      endpoint: { payload: { browseId: 'FEmusic_library_privately_owned_release_detail_abc' } },
+      badges: [],
+    } as never);
+    expect(privRelease).not.toBeNull();
+    expect(privRelease!.kind).toBe('album');
+  });
+
+  it('safely maps albums even with missing url or MusicDetailHeader', () => {
+    const mapped = mapAlbum('MPREb_safe', {
+      header: {
+        title: { text: 'Test Album' },
+        subtitle: { text: 'Album • 2024' },
+        second_subtitle: { text: '5 songs' },
+        thumbnail: [],
+      } as never,
+      contents: [] as never,
+      sections: [] as never,
+      url: 'not-a-valid-url',
+    });
+    expect(mapped.id).toBe('MPREb_safe');
+    expect(mapped.title).toBe('Test Album');
+    expect(mapped.playlistId).toBeNull();
+    expect(mapped.tracks).toEqual([]);
+
+    const browse = mapBrowse({ sections: [] }, 'Albums');
+    expect(browse.title).toBe('Albums');
   });
 });

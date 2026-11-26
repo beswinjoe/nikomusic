@@ -2223,6 +2223,7 @@ private fun AudioQuality.localizedLabel(): String = stringResource(
         AudioQuality.MEDIUM -> R.string.medium
         AudioQuality.HIGH -> R.string.high
         AudioQuality.LOSSLESS -> R.string.lossless
+        AudioQuality.HI_RES_LOSSLESS -> R.string.hi_res_lossless
     },
 )
 
@@ -2232,6 +2233,7 @@ private fun DownloadQuality.localizedLabel(): String = stringResource(
         DownloadQuality.STANDARD -> R.string.standard
         DownloadQuality.HIGH -> R.string.high
         DownloadQuality.LOSSLESS -> R.string.lossless
+        DownloadQuality.HI_RES_LOSSLESS -> R.string.hi_res_lossless
     },
 )
 

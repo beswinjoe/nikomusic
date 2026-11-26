@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { line } from './model';
 import { lookupLyrics } from './repository';
 import { useLyricsSettings } from './settings';
+import { cleanSongSearchTerms } from '@/data/music/api';
+import { forLyricsSearch } from './sources';
 
 vi.mock('./http', () => ({ lyricsGet: async () => null }));
 vi.mock('./providers', () => ({
@@ -33,5 +35,26 @@ describe('lookupLyrics', () => {
     const track = { videoId: 'instrumenta', title: 'Instrumental', artist: 'Artist', durationMs: 180_000, album: null };
 
     expect((await lookupLyrics(track))?.source).toBe('lrclib');
+  });
+
+  it('cleans music video packaging suffixes in forLyricsSearch without dropping versions', () => {
+    expect(forLyricsSearch('Low - Official Music Video')).toBe('Low');
+    expect(forLyricsSearch('Low | Official Video 4K')).toBe('Low');
+    expect(forLyricsSearch('Low - Remix')).toBe('Low - Remix');
+  });
+
+  it('strips fake third-party lyric channels like 7clouds and recovers real artist/title hints', () => {
+    expect(cleanSongSearchTerms('Sailor Song', '7clouds R&B')).toEqual({
+      title: 'Sailor Song',
+      artist: '',
+    });
+    expect(cleanSongSearchTerms('Gigi Perez - Sailor Song (Lyrics)', '7clouds R&B')).toEqual({
+      title: 'Sailor Song',
+      artist: 'Gigi Perez',
+    });
+    expect(cleanSongSearchTerms('Dracula', 'Tame Impala - Topic')).toEqual({
+      title: 'Dracula',
+      artist: 'Tame Impala',
+    });
   });
 });

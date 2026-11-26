@@ -10,6 +10,7 @@ import com.music.nikomusic.data.listentogether.PartyMember
 import com.music.nikomusic.data.lyrics.LyricLine
 import com.music.nikomusic.data.lyrics.LyricsSource
 import com.music.nikomusic.data.model.Song
+import com.music.nikomusic.data.model.isOriginalVideoCandidate
 import com.music.nikomusic.data.settings.AudioQuality
 import com.music.nikomusic.data.settings.LastPlayerScreen
 import com.music.nikomusic.data.settings.PlayerTheme
@@ -83,7 +84,13 @@ interface PlayerHost {
      * still artwork under it until then.
      */
     @Composable
-    fun MusicVideo(videoId: String, fit: Boolean, onRenderedChanged: (Boolean) -> Unit, modifier: Modifier) = Unit
+    fun MusicVideo(
+        videoId: String,
+        fit: Boolean,
+        onRenderedChanged: (Boolean) -> Unit,
+        modifier: Modifier,
+        bottomFade: Float = 0f,
+    ) = Unit
 
     /** Whether [videoId] shows its picture, rather than playing as audio by the listener's choice. */
     fun showsMusicVideoPicture(videoId: String): Boolean = true
@@ -200,9 +207,9 @@ internal fun videoQualityLabel(height: Int): String = when {
     else -> "${height}p"
 }
 
-/** Whether [song]'s picture can be shown here — a music video, on a platform that plays one. */
+/** Whether [song]'s picture can be shown here — an authentic official music video, on a platform that plays one. */
 internal fun showsMusicVideo(song: Song): Boolean =
-    song.isVideo && PlayerPlatform.host.musicVideoSupported &&
+    song.isOriginalVideoCandidate() && PlayerPlatform.host.musicVideoSupported &&
         PlayerPlatform.host.showsMusicVideoPicture(song.videoId)
 
 /** @see PlayerHost.MusicVideo */
@@ -211,8 +218,9 @@ internal fun MusicVideoSurface(
     videoId: String,
     modifier: Modifier = Modifier,
     fit: Boolean = true,
+    bottomFade: Float = 0f,
     onRenderedChanged: (Boolean) -> Unit = {},
-) = PlayerPlatform.host.MusicVideo(videoId, fit, onRenderedChanged, modifier)
+) = PlayerPlatform.host.MusicVideo(videoId, fit, onRenderedChanged, modifier, bottomFade)
 
 /** What the output drawer needs to know about casting to draw its row. */
 data class CastUi(

@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react';
 import { create } from 'zustand';
+import { getCachedOriginalVideoSupport, hasOriginalMusicVideo } from '@/data/music/api';
+import type { Track } from '@/data/music/types';
 
 /**
  * A music video's picture (playback/youtube/videoDeck.ts plays it). One muted
@@ -15,6 +18,10 @@ export type VideoQuality = 'auto' | number;
 interface VideoState {
   /** The track whose picture is loaded, once its first frame is ready to show. */
   videoId: string | null;
+  /** Video ID whose picture is temporarily hidden because Audio-Only / Song mode was chosen without a separate audio cut. */
+  suppressedVideoId: string | null;
+  /** Video IDs whose picture could not be resolved or decoded cleanly. */
+  unavailableIds: Record<string, true>;
   /** Width over height, e.g. 16/9. */
   aspect: number;
   /** How many surfaces want the picture; with none it isn't streamed. */
@@ -30,13 +37,19 @@ interface VideoState {
 const QUALITY_KEY = 'nikomusic:video-quality';
 
 function storedQuality(): VideoQuality {
-  const stored = localStorage.getItem(QUALITY_KEY);
-  const height = Number(stored);
-  return stored && Number.isFinite(height) && height > 0 ? height : 'auto';
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(QUALITY_KEY) : null;
+    const height = Number(stored);
+    return stored && Number.isFinite(height) && height > 0 ? height : 'auto';
+  } catch {
+    return 'auto';
+  }
 }
 
 export const useVideo = create<VideoState>()(() => ({
   videoId: null,
+  suppressedVideoId: null,
+  unavailableIds: {},
   aspect: 16 / 9,
   surfaces: 0,
   heights: [],
@@ -44,15 +57,69 @@ export const useVideo = create<VideoState>()(() => ({
   activeHeight: null,
 }));
 
+export function suppressVideoPicture(videoId: string | null): void {
+  useVideo.setState({ suppressedVideoId: videoId });
+}
+
+export function markVideoUnavailable(videoId: string | null | undefined): void {
+  if (!videoId) return;
+  useVideo.setState((s) =>
+    s.unavailableIds[videoId] ? s : { unavailableIds: { ...s.unavailableIds, [videoId]: true } },
+  );
+}
+
 /** Holds the picture at [quality] from now on; the deck reloads it at the same moment. */
 export function setVideoQuality(quality: VideoQuality): void {
-  if (quality === 'auto') localStorage.removeItem(QUALITY_KEY);
-  else localStorage.setItem(QUALITY_KEY, String(quality));
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (quality === 'auto') localStorage.removeItem(QUALITY_KEY);
+      else localStorage.setItem(QUALITY_KEY, String(quality));
+    }
+  } catch {
+    // Ignore storage restriction errors
+  }
   useVideo.setState({ quality });
 }
 
-/** Whether [videoId]'s picture is ready to show. */
-export const useHasVideo = (videoId: string | null | undefined) => useVideo((s) => !!videoId && s.videoId === videoId);
+/** Whether [videoId]'s picture is ready to show (and not explicitly hidden in Song mode). */
+export const useHasVideo = (videoId: string | null | undefined) =>
+  useVideo((s) => !!videoId && s.videoId === videoId && s.suppressedVideoId !== videoId && !s.unavailableIds[videoId]);
+
+/**
+ * True only when [track] has an authentic original Music Video (or is one)
+ * and its video stream hasn't failed. Hides Video Mode for tracks without original video.
+ */
+export function useOriginalVideoAvailable(track: Track | null): boolean {
+  const videoId = track?.videoId ?? null;
+  const unavailable = useVideo((s) => !!(videoId && s.unavailableIds[videoId]));
+  const activeLoaded = useVideo((s) => !!videoId && s.videoId === videoId);
+  const [available, setAvailable] = useState<boolean>(() =>
+    videoId ? getCachedOriginalVideoSupport(videoId) === true : false,
+  );
+
+  useEffect(() => {
+    if (!track || unavailable) {
+      setAvailable(false);
+      return;
+    }
+    const cached = getCachedOriginalVideoSupport(track.videoId);
+    if (cached !== undefined) {
+      setAvailable(cached);
+      return;
+    }
+    setAvailable(false);
+    let cancelled = false;
+    void hasOriginalMusicVideo(track).then((ok) => {
+      if (!cancelled) setAvailable(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [track, videoId, unavailable]);
+
+  const cached = videoId ? getCachedOriginalVideoSupport(videoId) : undefined;
+  return !unavailable && (available || (activeLoaded && cached !== false));
+}
 
 /** How a height is named on screen: the marketing name where there is one, the height otherwise. */
 export function qualityLabel(height: number): string {

@@ -8,6 +8,7 @@ import {
   ArtistsIcon,
   HomeIcon,
   MadeForYouIcon,
+  MoodsIcon,
   NewIcon,
   RecentlyAddedIcon,
   SearchIcon,
@@ -44,11 +45,14 @@ const LIBRARY_ICONS: Record<Exclude<LibrarySection, 'playlists'>, NavItem['Icon'
   'made-for-you': MadeForYouIcon,
 };
 
-const LIBRARY: NavItem[] = (Object.keys(LIBRARY_ICONS) as (keyof typeof LIBRARY_ICONS)[]).map((section) => ({
-  to: `/library/${section}`,
-  label: LIBRARY_SECTIONS[section].title,
-  Icon: LIBRARY_ICONS[section],
-}));
+const LIBRARY: NavItem[] = [
+  ...(Object.keys(LIBRARY_ICONS) as (keyof typeof LIBRARY_ICONS)[]).map((section) => ({
+    to: `/library/${section}`,
+    label: LIBRARY_SECTIONS[section].title,
+    Icon: LIBRARY_ICONS[section],
+  })),
+  { to: '/moods', label: 'Find Your Mood', Icon: MoodsIcon },
+];
 
 // A sidebar row; NavLink sets aria-current on the page's own row.
 const item =
@@ -159,6 +163,12 @@ export function Sidebar() {
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto pr-3 pl-5 [scrollbar-width:none]">
           <NavList items={PRIMARY} onNavigate={close} />
+          {!signedIn && (
+            <NavList
+              items={[{ to: '/moods', label: 'Find Your Mood', Icon: MoodsIcon }]}
+              onNavigate={close}
+            />
+          )}
           {signedIn && <LibraryNav onNavigate={close} />}
           {spotifySignedIn && <SpotifyNav onNavigate={close} />}
         </div>

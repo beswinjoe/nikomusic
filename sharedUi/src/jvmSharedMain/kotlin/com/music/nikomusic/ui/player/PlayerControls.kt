@@ -249,9 +249,9 @@ internal fun PlayerScrubber(
             mixing = mixing,
             mixPulse = mixPulse,
             transitionWindow = transitionWindow,
-            vibrant = false,
-            activeColor = Color(0xFF1DB954),
-            draggingActiveColor = Color(0xFF1ED760),
+            vibrant = ink != null,
+            activeColor = ink?.active ?: Color.White.copy(alpha = 0.92f),
+            draggingActiveColor = ink?.active ?: Color.White,
             inactiveColor = ink?.inactive ?: Color.White.copy(alpha = 0.26f),
             markerColor = ink?.marker ?: Color.White.copy(alpha = 0.5f),
         )
@@ -385,7 +385,7 @@ internal fun PlaybackQualityLabel(
     LosslessOrStats(
         isLoading = isLoading,
         stillRacing = song.videoId in racingLossless,
-        losslessRequested = effectiveQuality == AudioQuality.LOSSLESS,
+        losslessRequested = effectiveQuality == AudioQuality.LOSSLESS || effectiveQuality == AudioQuality.HI_RES_LOSSLESS,
         nerdStats = nerdStats,
         modifier = modifier,
     )

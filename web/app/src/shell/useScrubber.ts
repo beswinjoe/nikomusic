@@ -77,7 +77,12 @@ export function useScrubber() {
   const pulse = useRef<Pulse>({ cover: 0, depth: 0, phase: 0, locked: false, last: performance.now() });
   const status = usePlayer((s) => s.status);
   const deck = usePlayer((s) => s.deck);
-  const mixing = usePlayer((s) => s.mixing);
+  const loopMixing = usePlayer((s) => s.mixing);
+  const automix = usePlayer((s) => s.automix);
+  const automixScheduled = usePlayer(
+    (s) => s.automixState?.state === 'scheduled' && (s.automixState.startsInSec ?? 99) <= 0.1,
+  );
+  const mixing = loopMixing || (automix && automixScheduled);
   const seek = usePlayer((s) => s.seek);
   const [dragging, setDragging] = useState<number | null>(null);
 

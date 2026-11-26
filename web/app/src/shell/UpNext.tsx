@@ -1,5 +1,5 @@
 import { party, useParty } from '@/party/listenTogether';
-import { Infinity as InfinityIcon, MoreHorizontal, X } from 'lucide-react';
+import { AudioWaveform, Infinity as InfinityIcon, MoreHorizontal, X } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { Menu, MenuHeader, MenuItem, MenuSeparator } from '@/components/Menu';
 import { Artwork } from '@/components/music/Artwork';
@@ -151,6 +151,15 @@ export function UpNext() {
             Clear
           </button>
         )}
+        <button
+          className={square}
+          aria-label="AutoMix"
+          title={automix ? 'AutoMix On: beat-matched transitions' : 'Turn AutoMix On'}
+          aria-pressed={automix}
+          onClick={() => setAutomix(!automix)}
+        >
+          <AudioWaveform size={16} strokeWidth={2.2} />
+        </button>
         <button
           className={square}
           aria-label="AutoPlay"

@@ -43,3 +43,8 @@ services:
       # invite deep links then use it verbatim.
       - key: JAM_PUBLIC_ORIGIN
         sync: false
+      # Optional server-only AI provider keys for background taste curation (never sent to users).
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

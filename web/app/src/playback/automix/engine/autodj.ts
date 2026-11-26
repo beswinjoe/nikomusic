@@ -12,8 +12,8 @@ import type { TrackAnalysis } from '../analysis/types';
 import { analyzer } from '../analysis/analyzer';
 import type { Deck } from './deck';
 import type { Candidate } from './selector';
-import { scheduleTransition, plannedBars, MIN_GRID_CONFIDENCE, type TransitionPlan } from './transition-scheduler';
-import { asOutgoing, gridOf, phraseAtOrBefore } from './grid';
+import { planMixWindowTiming, scheduleTransition, MIN_GRID_CONFIDENCE, type TransitionPlan } from './transition-scheduler';
+import { asOutgoing, gridOf } from './grid';
 import type { LoopDeck } from './loopDeck';
 import {
   IN_REGION_SEC,
@@ -102,7 +102,7 @@ const PRELOAD_WINDOW_SEC = 60;
 const LOOP_PREPARE_SEC = OUT_SEARCH_SEC + 40;
 /** NikoMusic: the outgoing loop starts at least this far ahead of the playhead when it's planned. */
 const LOOP_SETUP_SEC = 15;
-const SCHEDULE_WINDOW_SEC = 12;
+const SCHEDULE_WINDOW_SEC = 8;
 const EMERGENCY_REMAINING_SEC = 10;
 
 /**
@@ -347,11 +347,13 @@ export class AutoDJ {
       }
 
       const ready = this.nextKey !== null && this.nextLoadedKey === this.nextKey;
+      const posSec = this.host.front().expectedTrackTime ?? 0;
+      const remSec = this.trackRemaining();
       if (ready && remaining < SCHEDULE_WINDOW_SEC && this.loopPlan) {
         await this.scheduleLoop(cur);
       } else if (ready && remaining < SCHEDULE_WINDOW_SEC) {
         this.scheduleBlend(cur, false);
-      } else if (ready && this.trackRemaining() < EMERGENCY_REMAINING_SEC) {
+      } else if (ready && remSec > 0.5 && remSec < EMERGENCY_REMAINING_SEC && posSec > 15) {
         this.scheduleBlend(cur, true);
       }
       this.push();
@@ -374,30 +376,27 @@ export class AutoDJ {
       return t0 === null ? 0 : Math.max(0, t0 - now);
     }
     if (this.loopPlan) this.loopPlan = null; // the playhead went past it
-    const grid = gridOf(cur);
-    if (!grid || cur.gridConfidence < MIN_GRID_CONFIDENCE) {
-      const target = (cur.outroStartSec ?? cur.durationSec) - 12;
-      this.window = { videoId: cur.fileKey, startSec: Math.max(0, target), endSec: Math.max(0, target) + 12 };
-      this.beatSec = null;
-      return Math.max(0, target - pos);
-    }
     const outRate = front.timeline.rateAt(now) || 1;
-    const effBpm = grid.bpm * outRate;
     const next = this.nextKey ? analyzer.get(this.nextKey) : null;
-    // the same length the scheduler will choose for this pair (a filter mix runs longer than a weak-grid blend)
-    const bars = plannedBars(this.transitionBars, cur, next ?? null, outRate);
-    const blendOutputSec = bars * 4 * (60 / effBpm);
-    const blendInputSec = blendOutputSec * outRate;
-    let mixOut = phraseAtOrBefore(grid, (cur.outroStartSec ?? cur.durationSec) - blendInputSec);
-    mixOut = Math.min(mixOut, phraseAtOrBefore(grid, cur.durationSec - blendInputSec - grid.barSec));
-    this.window = { videoId: cur.fileKey, startSec: mixOut, endSec: mixOut + blendInputSec };
-    this.beatSec = grid.beatSec / outRate;
-    const t0 = front.timeline.ctxTimeAt(mixOut, now);
-    return t0 === null ? 0 : Math.max(0, t0 - now);
+    const timing = planMixWindowTiming({
+      fromAnalysis: cur,
+      toAnalysis: next,
+      requestedBars: this.transitionBars,
+      outRate,
+    });
+    this.window = {
+      videoId: cur.fileKey,
+      startSec: Math.max(0, timing.mixOutTrackTime),
+      endSec: Math.min(cur.durationSec, timing.mixOutTrackTime + timing.blendInputSec),
+    };
+    this.beatSec = timing.style === 'crossfade' ? null : timing.beatSec;
+    const t0 = front.timeline.ctxTimeAt(timing.mixOutTrackTime, now);
+    return t0 === null ? Math.max(0, timing.mixOutTrackTime - pos) : Math.max(0, t0 - now);
   }
 
   private trackRemaining(): number {
     const front = this.host.front();
+    if (!Number.isFinite(front.durationSec) || front.durationSec <= 15) return Infinity;
     const pos = front.expectedTrackTime ?? 0;
     return front.durationSec - pos;
   }

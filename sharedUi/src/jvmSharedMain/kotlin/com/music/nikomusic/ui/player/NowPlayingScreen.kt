@@ -1585,7 +1585,11 @@ fun NowPlayingScreen(
     // Spotify Canvas is the player background on a phone, independent of the
     // still-art full-bleed preference. Other providers and static artwork keep
     // answering to that preference exactly as before.
-    // A music video sits in the card's place at its own 16:9, never full bleed.
+    val videoHeroMode = videoMode &&
+        fullBleedArt &&
+        playerFillsWindow(windowWidth) &&
+        !squareVideo &&
+        !videoFullscreen
     val heroMode = !videoMode && (
         spotifyCanvasOnPhone ||
             (fullBleedArt && playerFillsWindow(windowWidth))
@@ -2987,6 +2991,44 @@ fun NowPlayingScreen(
                     }
                 }
 
+                // Bezelless full-bleed Music Video hero banner on portrait mobile: edge-to-edge cropped
+                // across the top behind the status bar and dissolving softly downward into the mesh backdrop.
+                if (videoHeroMode && heroHeight > 0.dp) {
+                    WhileShown({ !collapsePastHalf && !docking() }) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .fillMaxWidth()
+                                .height(heroHeight)
+                                .graphicsLayer {
+                                    alpha = (1f - p() * 2f).coerceIn(0f, 1f) * dockFade()
+                                    translationX = swipeSettle.value * (1f - p())
+                                }
+                                .hazeSource(playerHaze),
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                                    .artworkBottomFade({ 1f }, { HERO_FADE_FRACTION }),
+                            ) {
+                                AutoMixPlayerCover(
+                                    art = art,
+                                    frames = autoMixFrames.baseUnderCanvas(pair),
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                            MusicVideoSurface(
+                                videoId = song.videoId,
+                                fit = false,
+                                bottomFade = HERO_FADE_FRACTION,
+                                onRenderedChanged = { videoRendered = it },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+                }
+
                 // This transparent top gradient is always present while the modal
                 // player owns the system bar. Its opacity follows the actual top-band
                 // artwork, rather than changing the status-bar glyph colour per cover.
@@ -4048,7 +4090,7 @@ fun NowPlayingScreen(
                                             // card's foot (the banner dissolving there,
                                             // or a Canvas to the screen's edges), so
                                             // the foot sits lower, nearer the title.
-                                            translationY = BANNER_FOOT_DROP.toPx() * if (spotifyCanvasPresentation) {
+                                            translationY = BANNER_FOOT_DROP.toPx() * if (spotifyCanvasPresentation || videoHeroMode) {
                                                 1f - p()
                                             } else {
                                                 bannerShown()
@@ -4060,16 +4102,30 @@ fun NowPlayingScreen(
                             }
                         }
 
-                        // The music video, across the player's whole width — the
-                        // same gutters as everything under it — at its own shape,
-                        // centred where the sleeve's square sits. Not the sleeve's
-                        // width: that square is bounded by the screen's height, so
-                        // on a phone it is narrower than the screen. Nor its paused
-                        // shrink: a video doesn't breathe. Put away for the
-                        // collapse into the lyrics or the queue, where the thumbnail
-                        // is the still sleeve, and for the trip to the mini player,
-                        // which takes the picture over.
-                        if (videoMode) {
+                        if (videoHeroMode) {
+                            WhileShown({ !collapsePastHalf && !docking() }) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .graphicsLayer {
+                                            alpha = (1f - p() * 2f).coerceIn(0f, 1f)
+                                        },
+                                ) {
+                                    VideoCornerControls(
+                                        fullscreen = false,
+                                        onToggleFullscreen = enterFullscreen,
+                                        onOpenQuality = { showVideoQuality = true },
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(8.dp),
+                                    )
+                                }
+                            }
+                        }
+
+                        // The music video, across the player's whole width when full-bleed is off or on tablets —
+                        // at its own shape, centred where the sleeve's square sits.
+                        if (videoMode && !videoHeroMode) {
                             WhileShown({ !collapsePastHalf && !docking() }) {
                                 val videoAspect by PlayerPlatform.host.musicVideoAspect
                                     .collectAsStateWithLifecycle()

@@ -58,7 +58,10 @@ object KuGou {
         val body = lyricsGet(url.toString()) ?: return null
         val response = runCatching { lyricsJson.decodeFromString<SearchSongResponse>(body) }.getOrNull()
         return response?.data?.info.orEmpty()
-            .filter { seconds <= 0 || abs(it.duration - seconds) <= DURATION_TOLERANCE_SECONDS }
+            .filter { info ->
+                (seconds <= 0 || abs(info.duration - seconds) <= DURATION_TOLERANCE_SECONDS) &&
+                    isKuGouInfoMatch(keyword.query, info)
+            }
             .sortedBy { abs(it.duration - seconds) }
             .map { it.hash }
     }
@@ -159,6 +162,17 @@ object KuGou {
     private val STAMPED = Regex("""\[\d{2}:\d{2}\.\d{2,3}].*""")
     private val CREDIT = Regex(""".+][^\[]+[:：].+""")
 
+    private fun isKuGouInfoMatch(query: String, info: SearchSongResponse.Info): Boolean {
+        val combinedName = listOf(info.songname, info.singername, info.filename).filter { it.isNotBlank() }.joinToString(" ")
+        if (combinedName.isBlank()) return true
+        if (!isLyricsVersionCompatible(query, info.songname.ifBlank { info.filename })) return false
+        val songTokens = normalizeLyricsMatchText(info.songname.ifBlank { info.filename })
+            .split(' ').filter { it.length >= 2 }
+        if (songTokens.isEmpty()) return true
+        val normQuery = normalizeLyricsMatchText(query)
+        return songTokens.any { it in normQuery }
+    }
+
     private class Keyword(val query: String)
 
     @Serializable
@@ -167,7 +181,13 @@ object KuGou {
         data class Data(val info: List<Info> = emptyList())
 
         @Serializable
-        data class Info(val hash: String, val duration: Int = -1)
+        data class Info(
+            val hash: String,
+            val duration: Int = -1,
+            val songname: String = "",
+            val singername: String = "",
+            val filename: String = "",
+        )
     }
 
     @Serializable

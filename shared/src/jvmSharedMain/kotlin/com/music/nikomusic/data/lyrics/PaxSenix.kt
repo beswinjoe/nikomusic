@@ -21,7 +21,7 @@ object PaxSenix {
     private const val API = "https://api.paxsenix.org"
     private const val PUBLIC_PROXY = "https://lyrics.paxsenix.org"
     private const val APPLE_SEARCH = "https://amp-api.music.apple.com/v1/catalog/us/search"
-    private const val MINIMUM_MATCH_SCORE = 10
+    private const val MINIMUM_MATCH_SCORE = 20
 
     private val tokenMutex = Mutex()
     private val cachedAppleToken = AtomicReference<String?>(null)
@@ -197,7 +197,14 @@ object PaxSenix {
         durationMs: Long,
     ): Candidate? {
         val candidates = buildList { root.collectCandidates(this) }
-        return candidates.map { it to it.score(title, artist, durationMs) }
+        return candidates
+            .filter { candidate ->
+                isLyricsVersionCompatible(title, candidate.title) &&
+                    (artist.isBlank() || candidate.artist.isBlank() || lyricsArtistMatches(candidate.artist, artist) ||
+                        textScore(candidate.artist, artist, 1, 1) > 0) &&
+                    (durationMs <= 0L || candidate.durationMs <= 0L || abs(candidate.durationMs - durationMs) <= 20_000L)
+            }
+            .map { it to it.score(title, artist, durationMs) }
             .maxByOrNull { it.second }
             ?.takeIf { it.second >= MINIMUM_MATCH_SCORE }
             ?.first
