@@ -19,7 +19,7 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - run: go vet ./... && go test ./...
+      - run: go build -o /dev/null . && go vet ./... && go test -race ./...
         working-directory: backend
 
   deploy:
@@ -32,18 +32,25 @@ jobs:
           HOST: ${{ secrets.ORACLE_HOST }}
           KNOWN_HOSTS: ${{ secrets.ORACLE_KNOWN_HOSTS }}
         run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::Missing required deployment secrets (ORACLE_HOST, ORACLE_DEPLOY_KEY, ORACLE_KNOWN_HOSTS)."
+            exit 1
+          fi
+          trap 'rm -f ~/.ssh/deploy ~/.ssh/known_hosts' EXIT
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy ~/.ssh/known_hosts
           # The key is pinned to /usr/local/sbin/nikomusic-deploy on the VM.
-          ssh -i ~/.ssh/deploy deploy@"$HOST"
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 deploy@"$HOST"
       - name: Health check
         if: ${{ vars.BACKEND_HEALTHCHECK_URL != '' }}
         env:
           HEALTHCHECK_URL: ${{ vars.BACKEND_HEALTHCHECK_URL }}
         run: |
           for i in $(seq 1 12); do
-            curl -fsS "$HEALTHCHECK_URL" && exit 0
+            curl -fsS --max-time 10 "$HEALTHCHECK_URL" && exit 0
             sleep 5
           done
+          echo "::error::Backend health check failed after 12 attempts."
           exit 1
