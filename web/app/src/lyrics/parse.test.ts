@@ -101,4 +101,18 @@ describe('TTML writer', () => {
     expect(ttml).toContain('itunes:timing="None"');
     expect(ttml).not.toContain('begin=');
   });
+  it('preserves extended LRC timestamps, final word sweep, TTML rounding, and background vocals', () => {
+    const lines = parseLrc('[00:00.0]Intro line\n[00:12.3]Tenths\n[01:02:03.40]<01:02:03.40>Hour <01:02:04.00>final\n[102:15.50]Late track');
+    expect(lines.map((l) => l.timeMs)).toEqual([0, 12_300, 3_723_400, 102 * 60_000 + 15_500]);
+    const finalWord = lines[2]!.words.at(-1)!;
+    expect(finalWord.text).toBe('final');
+    expect(finalWord.endMs).toBeGreaterThan(finalWord.startMs);
+
+    const ttmlRounded = parseTtml('<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="12.349" end="13.501">Precise</p></div></body></tt>').filter((l) => l.text);
+    expect(ttmlRounded[0]!.timeMs).toBe(12_349);
+
+    const withBg = withBackgroundVocals(parseLrc('[00:05.00]Main vocal (Answering part)'));
+    const writtenBg = writeTtml(withBg);
+    expect(writtenBg).toContain('ttm:role="x-bg"');
+  });
 });

@@ -32,11 +32,7 @@ object LyricsPlus {
 
     private val MIRRORS = listOf(
         "https://lyricsplus.prjktla.my.id",
-        "https://lyricsplus.atomix.one",
         "https://lyricsplus.binimum.org",
-        "https://lyricsplus.prjktla.workers.dev",
-        "https://lyricsplus-seven.vercel.app",
-        "https://lyrics-plus-backend.vercel.app",
     )
 
     private val lastGood = AtomicReference<String?>(null)

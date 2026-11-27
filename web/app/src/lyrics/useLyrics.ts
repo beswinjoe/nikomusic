@@ -68,7 +68,7 @@ export function useLyrics() {
     staleTime: Infinity,
     gcTime: 30 * 60_000,
     retry: false,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const player = usePlayer.getState();
       const entry = player.queue[player.index];
       let resolvedTrack: Track | null = paired ?? null;
@@ -93,6 +93,7 @@ export function useLyrics() {
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
         ]);
       }
+      if (signal.aborted) return null;
       const effectiveTitle = resolvedTrack?.title ? cleanSongSearchTerms(resolvedTrack.title, '').title : queryTitle;
       const resolvedArtist = resolvedTrack?.artists.map((a) => a.name).join(', ').trim() ?? '';
       const effectiveArtist = resolvedArtist ? cleanSongSearchTerms(effectiveTitle, resolvedArtist).artist : queryArtist;
@@ -106,7 +107,12 @@ export function useLyrics() {
           durationMs: Math.round(durationSec * 1000),
           album,
         },
-        { ...(only && { only }), onSource: (source, state) => reportState(videoId!, source, state) },
+        {
+          ...(only && { only }),
+          onSource: (source, state) => {
+            if (!signal.aborted) reportState(videoId!, source, state);
+          },
+        },
       );
     },
   });

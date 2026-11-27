@@ -493,7 +493,13 @@ fun assessTransitionTier(
         return TransitionPolicyVerdict(TransitionTier.PLAIN_CROSSFADE, reasons, floorConfidence)
     }
 
-    if (outgoingConfidence < MIN_DJ_CONFIDENCE && incomingConfidence < MIN_DJ_CONFIDENCE) {
+    // An unmetered or unmeasured track cannot anchor a beat-matched or DJ-assisted
+    // transition cleanly; fall back to an equal-power crossfade instead of letting
+    // one strong beat grid force an unmeasured track off-beat.
+    if (outgoingConfidence <= 0.05 ||
+        incomingConfidence <= 0.05 ||
+        (outgoingConfidence < MIN_DJ_CONFIDENCE && incomingConfidence < MIN_DJ_CONFIDENCE)
+    ) {
         return TransitionPolicyVerdict(
             TransitionTier.PLAIN_CROSSFADE,
             listOf("beat-confidence"),

@@ -683,6 +683,34 @@ class CrossfadeController(
 
     fun cancelAutoMixVisual() = AutoMixVisualFeed.cancel(visualGeneration)
 
+    /**
+     * Reconciles or cancels a queued/active transition after the session queue
+     * is edited. Edits that alter the upcoming track before handoff cancel the
+     * stale standby setup so the next tick arms against the updated queue;
+     * edits past the upcoming track or after handoff leave audio uninterrupted.
+     */
+    fun onQueueEdited() {
+        cancelAutoMixVisual()
+        if (phase == Phase.IDLE || phase == Phase.SLEEP_FADE || phase == Phase.BAILING) return
+        if (handedOff) return
+        val out = outgoing ?: active()
+        val nextIdx = out.nextMediaItemIndex
+        val currentNextId = if (nextIdx != C.INDEX_UNSET && nextIdx in 0 until out.mediaItemCount) {
+            out.getMediaItemAt(nextIdx).mediaId
+        } else {
+            null
+        }
+        val armedNextId = incoming?.currentMediaItem?.mediaId
+        if (armedNextId != null && currentNextId != armedNextId) {
+            when (phase) {
+                Phase.LOOP_ARMING -> loopBail("upcoming track changed", settle = false)
+                Phase.LOOP_RUNNING -> loopBail("upcoming track changed", settle = loopSession?.outPort?.tookOver == true)
+                Phase.ARMING, Phase.FADING -> bail()
+                else -> Unit
+            }
+        }
+    }
+
     private fun armAutoMixVisual(out: ExoPlayer, into: ExoPlayer, nextIndex: Int, items: List<MediaItem>) {
         fun trackAt(index: Int): AutoMixVisualTrack? {
             val item = items.getOrNull(index) ?: return null
@@ -744,6 +772,12 @@ class CrossfadeController(
     }
 
     private val listener = object : Player.Listener {
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
+                onQueueEdited()
+            }
+        }
+
         override fun onPositionDiscontinuity(
             oldPosition: Player.PositionInfo,
             newPosition: Player.PositionInfo,
@@ -2757,7 +2791,14 @@ class CrossfadeController(
     /** Waits for the outgoing sink to splice over to the renderer. */
     private fun driveLoopArming() {
         val out = outgoing ?: return loopBail("no outgoing player")
-        if (!out.playWhenReady) return loopBail("paused before the loop")
+        val into = incoming ?: return loopBail("no incoming player")
+        if (!out.playWhenReady) {
+            // Keep the armed loop intact while paused instead of discarding the
+            // prepared decode; seeks, skips, or sink flushes still bail cleanly.
+            if (into.playWhenReady) into.playWhenReady = false
+            armDeadline = maxOf(armDeadline, SystemClock.elapsedRealtime() + 20_000L)
+            return
+        }
         val session = loopSession
         if (session == null) {
             if (SystemClock.elapsedRealtime() > armDeadline) loopFallBack("the decks took too long")
@@ -2792,9 +2833,19 @@ class CrossfadeController(
         if (session.outPort.interrupted || (loopIncomingStarted && session.inPort.interrupted)) {
             return loopBail("a sink was flushed", settle = false)
         }
-        if (!sessionPlayer.playWhenReady) return loopBail("paused", settle = true)
+        if (!sessionPlayer.playWhenReady) {
+            // Freeze both decks together while paused so resuming continues the loop seamlessly.
+            val partner = if (handedOff) out else into
+            if (partner.playWhenReady) partner.playWhenReady = false
+            session.mixSeconds(System.nanoTime(), playing = false)
+            return
+        }
+        if (loopIncomingStarted || handedOff) {
+            val partner = if (handedOff) out else into
+            if (!partner.playWhenReady) partner.playWhenReady = true
+        }
         val now = System.nanoTime()
-        val m = session.mixSeconds(now, out.isPlaying) ?: return
+        val m = session.mixSeconds(now, sessionPlayer.isPlaying) ?: return
         if (!loopIncomingStarted && m >= session.inStartAt) {
             into.playWhenReady = true
             loopIncomingStarted = true
@@ -2897,7 +2948,8 @@ class CrossfadeController(
     fun loopPositionMs(): Long? {
         if (phase != Phase.LOOP_RUNNING) return null
         val session = loopSession ?: return null
-        val playing = outgoing?.isPlaying ?: return null
+        val activePlayer = if (handedOff) incoming else outgoing
+        val playing = activePlayer?.isPlaying ?: return null
         val m = session.mixSeconds(System.nanoTime(), playing) ?: return null
         if (m < 0) return null
         val side = if (handedOff) LoopMix.Side.IN else LoopMix.Side.OUT

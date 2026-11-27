@@ -57,4 +57,23 @@ describe('lookupLyrics', () => {
       artist: 'Tame Impala',
     });
   });
+
+  it('classifies timed lyrics starting at 00:00.00 as synced when lines carry end times or subsequent stamps', async () => {
+    const providers = await import('./providers');
+    const spy = vi.spyOn(providers, 'lrclib').mockResolvedValueOnce({
+      lines: [line(0, 'Opening line', { sungUntilMs: 2500 }), line(3000, 'Next line')],
+      ttml: '<tt/>',
+    });
+    useLyricsSettings.setState({ order: ['lrclib'], disabled: [], preferSyllables: false });
+    const res = await lookupLyrics({
+      videoId: 'zeroStart01',
+      title: 'Zero Start',
+      artist: 'Tester',
+      durationMs: 120_000,
+      album: 'Album A',
+    });
+    expect(res?.synced).toBe(true);
+    expect(res?.source).toBe('lrclib');
+    spy.mockRestore();
+  });
 });

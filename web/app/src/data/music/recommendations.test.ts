@@ -336,4 +336,30 @@ describe('Mood Discovery & Recommendation Engine (Web)', () => {
     expect(fb.likedRecommendations.map((x) => x.title)).toEqual(['Velvet Rain']);
     expect(fb.skippedRecommendations.map((x) => x.title)).toEqual(['Hyper EDM Track']);
   });
+
+  it('orders AutoPlay tracks smoothly under AutoMix without repeating lead artists or stalling on incompatible BPMs', () => {
+    const profile = getTasteProfile();
+    const hints = new Map([
+      ['seed', { bpm: 120, camelot: { num: 8, letter: 'B' as const }, energy: 0.6 }],
+      ['clash', { bpm: 175, camelot: { num: 2, letter: 'A' as const }, energy: 0.95 }],
+      ['same-art', { bpm: 120, camelot: { num: 8, letter: 'B' as const }, energy: 0.6 }],
+      ['smooth-1', { bpm: 122, camelot: { num: 9, letter: 'B' as const }, energy: 0.62 }],
+      ['smooth-2', { bpm: 124, camelot: { num: 9, letter: 'A' as const }, energy: 0.65 }],
+    ]);
+    const ordered = enhanceAutoplayTracks(
+      [track('seed', 'Seed', 'Anchor Artist')],
+      [
+        track('clash', 'Hard Metal Track', 'Different Band'),
+        track('same-art', 'Another Anchor Track', 'Anchor Artist'),
+        track('smooth-1', 'Groove One', 'Artist One'),
+        track('smooth-2', 'Groove Two', 'Artist Two'),
+      ],
+      profile,
+      4,
+      null,
+      { automix: true, hints },
+    );
+    expect(ordered).toHaveLength(4);
+    expect(ordered[0]!.videoId).toBe('smooth-1');
+  });
 });

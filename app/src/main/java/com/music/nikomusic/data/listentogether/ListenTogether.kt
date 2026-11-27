@@ -378,6 +378,9 @@ object ListenTogether {
     private val _effectiveIdleServer = MutableStateFlow(defaultServer)
     fun effectiveIdleServerBase(): String = _effectiveIdleServer.value
 
+    /** Normalized HTTP(S) base URL of the active backend server for shared backend services. */
+    fun aiBackendBaseUrl(): String = resolveHttpBase(effectiveIdleServerBase())
+
     /**
      * The server a party switch should target when the invite itself does not
      * name one.

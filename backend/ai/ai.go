@@ -40,8 +40,12 @@ type RecommendRequest struct {
 	SkippedArtists         []string        `json:"skippedArtists,omitempty"`
 	LikedRecommendations   []TrackHint     `json:"likedRecommendations,omitempty"`
 	SkippedRecommendations []TrackHint     `json:"skippedRecommendations,omitempty"`
+	PreferredGenres        []string        `json:"preferredGenres,omitempty"`
+	PreferredMoods         []string        `json:"preferredMoods,omitempty"`
+	ListeningPattern       string          `json:"listeningPattern,omitempty"`
 	PriorPersona           string          `json:"priorPersona,omitempty"`
 	PreferredScripts       []string        `json:"preferredScripts,omitempty"`
+	ExplorationRatio       float64         `json:"explorationRatio,omitempty"`
 	Audio                  *AudioSignature `json:"audio,omitempty"`
 }
 
@@ -54,6 +58,7 @@ type RecommendResponse struct {
 	Subgenres     []string `json:"subgenres,omitempty"`
 	AvoidKeywords []string `json:"avoidKeywords,omitempty"`
 	TasteSummary  string   `json:"tasteSummary,omitempty"`
+	Reasons       []string `json:"reasons,omitempty"`
 }
 
 // Config configures the server-only AI provider (from server env vars only).
@@ -301,8 +306,21 @@ func BuildPrompt(req RecommendRequest) string {
 	if len(req.SkippedArtists) > 0 {
 		fmt.Fprintf(&b, "Artists recently skipped early (avoid): %s\n", strings.Join(req.SkippedArtists, ", "))
 	}
+	if len(req.PreferredGenres) > 0 {
+		fmt.Fprintf(&b, "Preferred genres: %s\n", strings.Join(req.PreferredGenres, ", "))
+	}
+	if len(req.PreferredMoods) > 0 {
+		fmt.Fprintf(&b, "Preferred moods: %s\n", strings.Join(req.PreferredMoods, ", "))
+	}
+	if req.ListeningPattern != "" {
+		fmt.Fprintf(&b, "Typical listening rhythm: %s\n", req.ListeningPattern)
+	}
 	if len(req.PreferredScripts) > 0 {
 		fmt.Fprintf(&b, "Preferred language/script cues: %s\n", strings.Join(req.PreferredScripts, ", "))
+	}
+	if req.ExplorationRatio > 0 {
+		fmt.Fprintf(&b, "Target novelty balance: ~%.0f%% unfamiliar artists/tracks, ~%.0f%% deeper cuts from compatible scenes\n",
+			req.ExplorationRatio*100, (1.0-req.ExplorationRatio)*100)
 	}
 	if req.Audio != nil && req.Audio.AvgBPM > 0 {
 		fmt.Fprintf(&b, "Acoustic sweet spot: ~%.0f BPM, energy %.2f/1.00", req.Audio.AvgBPM, req.Audio.AvgEnergy)
@@ -315,9 +333,11 @@ func BuildPrompt(req RecommendRequest) string {
 	b.WriteString("1. Never include fan reuploads, lyric channels (like 7clouds), slowed+reverb, or sped-up remixes.\n")
 	b.WriteString("2. Queries should be clean official artist/track pairs like \"Artist Song Title\" suitable for searching YouTube Music Songs.\n")
 	b.WriteString("3. Do not repeat tracks already listed in favourite tracks above; pick adjacent/new releases or deep-cut gems matching the same sonic feel.\n")
-	b.WriteString("4. Update \"tasteSummary\" cleanly in <= 180 chars reflecting what this listener responds to.\n")
-	b.WriteString("5. Return JSON ONLY with keys:\n")
-	b.WriteString(`   {"queries": [8 to 10 "Artist - Track" strings], "artists": [6 to 8 recommended artist names], "subgenres": [3 to 5 concise subgenres], "avoidKeywords": [optional up to 6 mismatched subgenres], "tasteSummary": "<concise evolved taste persona>"}`)
+	b.WriteString("4. Spread queries across distinct artists and subgenres instead of repeating one artist twice.\n")
+	b.WriteString("5. Update \"tasteSummary\" cleanly in <= 180 chars reflecting what this listener responds to.\n")
+	b.WriteString("6. Optionally provide concise short labels in \"reasons\" (aligned 1-to-1 with \"queries\", max 6 words each) explaining why each fit the listener.\n")
+	b.WriteString("7. Return JSON ONLY with keys:\n")
+	b.WriteString(`   {"queries": [8 to 10 "Artist - Track" strings], "artists": [6 to 8 recommended artist names], "subgenres": [3 to 5 concise subgenres], "avoidKeywords": [optional up to 6 mismatched subgenres], "tasteSummary": "<concise evolved taste persona>", "reasons": [optional concise reasons matching queries]}`)
 	return b.String()
 }
 
@@ -345,6 +365,7 @@ func ParseRecommendationJSON(raw string) (RecommendResponse, error) {
 		Subgenres     []string `json:"subgenres"`
 		AvoidKeywords []string `json:"avoidKeywords"`
 		TasteSummary  string   `json:"tasteSummary"`
+		Reasons       []string `json:"reasons"`
 	}
 	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
 		return RecommendResponse{}, err
@@ -355,6 +376,7 @@ func ParseRecommendationJSON(raw string) (RecommendResponse, error) {
 		Subgenres:     cleanList(parsed.Subgenres, 6, 48),
 		AvoidKeywords: cleanList(parsed.AvoidKeywords, 6, 48),
 		TasteSummary:  clampText(parsed.TasteSummary, 200),
+		Reasons:       cleanRawList(parsed.Reasons, 10, 72),
 	}, nil
 }
 
@@ -375,15 +397,25 @@ func sanitizeHints(items []TrackHint, limit int) []TrackHint {
 }
 
 func sanitizeRequest(req RecommendRequest) RecommendRequest {
+	ratio := req.ExplorationRatio
+	if ratio < 0 {
+		ratio = 0
+	} else if ratio > 0.95 {
+		ratio = 0.95
+	}
 	out := RecommendRequest{
 		Mode:                   clampText(req.Mode, 24),
 		Mood:                   clampText(req.Mood, 40),
 		PriorPersona:           clampText(req.PriorPersona, 220),
+		ListeningPattern:       clampText(req.ListeningPattern, 64),
+		ExplorationRatio:       ratio,
 		TopTracks:              sanitizeHints(req.TopTracks, 12),
 		LikedRecommendations:   sanitizeHints(req.LikedRecommendations, 8),
 		SkippedRecommendations: sanitizeHints(req.SkippedRecommendations, 8),
 		LikedArtists:           cleanList(req.LikedArtists, 10, 64),
 		SkippedArtists:         cleanList(req.SkippedArtists, 10, 64),
+		PreferredGenres:        cleanList(req.PreferredGenres, 8, 40),
+		PreferredMoods:         cleanList(req.PreferredMoods, 6, 32),
 		PreferredScripts:       cleanList(req.PreferredScripts, 5, 24),
 	}
 	if req.Audio != nil && req.Audio.AvgBPM >= 40 && req.Audio.AvgBPM <= 240 {
@@ -415,6 +447,22 @@ func cleanList(items []string, limit, maxLen int) []string {
 			continue
 		}
 		seen[key] = struct{}{}
+		out = append(out, v)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// cleanRawList trims items without deduplicating so positional alignment (such as Reasons) stays intact.
+func cleanRawList(items []string, limit, maxLen int) []string {
+	out := make([]string, 0, min(limit, len(items)))
+	for _, item := range items {
+		v := clampText(item, maxLen)
+		if v == "" {
+			continue
+		}
 		out = append(out, v)
 		if len(out) >= limit {
 			break

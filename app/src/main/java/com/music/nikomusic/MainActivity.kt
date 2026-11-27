@@ -134,6 +134,9 @@ import com.music.nikomusic.auth.SpotifyLoginScreen
 import com.music.nikomusic.auth.WebSessionMode
 import com.music.nikomusic.auth.YtMusicLoginScreen
 import com.music.nikomusic.data.AppUpdateChecker
+import com.music.nikomusic.data.DailyDiscoveryCollection
+import com.music.nikomusic.data.DailyDiscoveryTrack
+import com.music.nikomusic.data.DiscoveryFeedbackAction
 import com.music.nikomusic.data.LocalMediaRepository
 import com.music.nikomusic.data.listentogether.JamInviteLink
 import com.music.nikomusic.data.listentogether.ListenTogether
@@ -176,6 +179,8 @@ import com.music.nikomusic.ui.navigation.AppRoute
 import com.music.nikomusic.ui.screens.EqualizerPresetPage
 import com.music.nikomusic.ui.screens.SettingsChoicePage
 import com.music.nikomusic.ui.components.SpotifyImportAlert
+import com.music.nikomusic.ui.screens.DailyDiscoveryHomeSection
+import com.music.nikomusic.ui.screens.DailyDiscoveryScreen
 import com.music.nikomusic.ui.screens.DriveBackupScreen
 import com.music.nikomusic.ui.screens.DriveDevicesScreen
 import com.music.nikomusic.ui.screens.DriveBackupAlerts
@@ -248,6 +253,7 @@ import com.music.nikomusic.download.Downloads
 import com.music.nikomusic.ui.components.BrowseActionsMenu
 import com.music.nikomusic.ui.components.BrowseTarget
 import com.music.nikomusic.ui.components.ConfirmationAlert
+import com.music.nikomusic.ui.components.DailyDiscoveryPrivacyAlert
 import com.music.nikomusic.ui.components.InfoAlert
 import com.music.nikomusic.ui.components.DownloadManagerPage
 import com.music.nikomusic.ui.components.PlaylistPickerSheet
@@ -604,7 +610,10 @@ private fun NikoMusicApp(
     // Top Picks turns over each hour; coming back to the app after a
     // turn-over is an open too.
     LaunchedEffect(appForeground) {
-        if (appForeground) viewModel.refreshTopPicksIfStale()
+        if (appForeground) {
+            viewModel.refreshTopPicksIfStale()
+            viewModel.refreshDailyDiscoveryIfStale()
+        }
     }
     // Where the two ends of opening and closing the player meet: the mini
     // player's cover reports itself here, the sheet its offset, and the player
@@ -732,6 +741,8 @@ private fun NikoMusicApp(
     var menuFromQueue by remember { mutableStateOf(false) }
     /** Whether the track menu was opened from the History screen. */
     var menuFromHistory by remember { mutableStateOf(false) }
+    var menuFromDailyDiscovery by remember { mutableStateOf(false) }
+    var menuDailyDiscoveryGenres by remember { mutableStateOf<List<String>>(emptyList()) }
     /**
      * The row or card that was held to open the track menu, or null when it
      * was opened any other way. Non-null lifts that item into
@@ -766,9 +777,16 @@ private fun NikoMusicApp(
     val openSongMenu: (Song) -> Unit = { song ->
         menuFromPlayer = false
         menuFromQueue = false
+        menuFromDailyDiscovery = false
+        menuDailyDiscoveryGenres = emptyList()
         songMenuOrigin = LongPressOrigin.consume()
         songMenuAnchor = MenuAnchor.consume()
         songActions = song
+    }
+    val openDailyDiscoveryMenu: (DailyDiscoveryTrack) -> Unit = { item ->
+        openSongMenu(item.song)
+        menuFromDailyDiscovery = true
+        menuDailyDiscoveryGenres = item.genres
     }
     // Whether the player's album/artist lookup (below, for the current track)
     // is still in flight — read by the long-press sheet so it can show a
@@ -882,6 +900,17 @@ private fun NikoMusicApp(
     val hideHomeVideos by AppSettings.hideHomeVideos.collectAsStateWithLifecycle()
     val hideTopPicks by AppSettings.hideTopPicks.collectAsStateWithLifecycle()
     val hideHomeMoods by AppSettings.hideHomeMoods.collectAsStateWithLifecycle()
+    val showDailyDiscoveryHome by AppSettings.showDailyDiscoveryHome.collectAsStateWithLifecycle()
+    val aiDiscoveryOptIn by AppSettings.aiDiscoveryOptIn.collectAsStateWithLifecycle()
+    val dailyDiscovery by viewModel.dailyDiscovery.collectAsStateWithLifecycle()
+    var showDailyDiscoveryPrivacy by remember { mutableStateOf(false) }
+    val dailyDiscoveryListState = rememberLazyListState()
+    val dailyDiscoveryScrolled by remember {
+        derivedStateOf {
+            dailyDiscoveryListState.firstVisibleItemIndex > 0 ||
+                dailyDiscoveryListState.firstVisibleItemScrollOffset > 140
+        }
+    }
     // Only what Home draws: Top Picks reads the unfiltered feed from the view model.
     val visibleHomeState = remember(homeState, hideHomeVideos, hideRecents) {
         val loaded = homeState as? UiState.Success
@@ -1160,6 +1189,11 @@ private fun NikoMusicApp(
         val shown = queueNotice ?: return@LaunchedEffect
         delay(3_000)
         if (queueNotice?.id == shown.id) queueNotice = null
+    }
+    LaunchedEffect(dailyDiscovery.noticeMessage) {
+        val message = dailyDiscovery.noticeMessage ?: return@LaunchedEffect
+        showQueueNotice(message)
+        viewModel.consumeDailyDiscoveryNotice()
     }
     // Why a control did nothing, on the same strip above the mini player that
     // already answers "added to queue". Reached from every surface that had a
@@ -1903,6 +1937,39 @@ private fun NikoMusicApp(
     }
     val onSongSwipe: (Song) -> Unit = { song ->
         if (AppSettings.swipeToPlayNext.value) playNext(song) else addToQueue(song)
+    }
+    val dailyDiscoveryLabel = stringResource(R.string.daily_discovery)
+    val dailyDiscoveryUnavailableMsg = stringResource(R.string.daily_discovery_unavailable_track)
+    val playDailyDiscovery: (DailyDiscoveryCollection?, Int, Boolean) -> Unit = { collection, tappedIndex, shuffle ->
+        val allItems = collection?.items.orEmpty()
+        if (allItems.isNotEmpty()) {
+            val tapped = allItems.getOrNull(tappedIndex)
+            if (tapped != null && !shuffle && (tapped.unavailable || tapped.song.videoId.isBlank() || tapped.song.isUnresolvedSpotify)) {
+                showQueueNotice(dailyDiscoveryUnavailableMsg)
+            } else {
+                val playableSongs = allItems
+                    .filter { !it.unavailable && it.song.videoId.isNotBlank() && !it.song.isUnresolvedSpotify }
+                    .map { it.song }
+                if (playableSongs.isEmpty()) {
+                    showQueueNotice(dailyDiscoveryUnavailableMsg)
+                } else if (shuffle) {
+                    playFrom(
+                        allSongs = playableSongs.shuffled(),
+                        allIndex = 0,
+                        source = QueueSource(dailyDiscoveryLabel, PlaybackSourceType.HOME, "daily_discovery"),
+                    )
+                } else {
+                    val targetIndex = tapped?.let { item ->
+                        playableSongs.indexOfFirst { it.videoId == item.song.videoId }.takeIf { it >= 0 }
+                    } ?: 0
+                    playFrom(
+                        allSongs = playableSongs,
+                        allIndex = targetIndex,
+                        source = QueueSource(dailyDiscoveryLabel, PlaybackSourceType.HOME, "daily_discovery"),
+                    )
+                }
+            }
+        }
     }
 
     /**
@@ -3136,6 +3203,34 @@ private fun NikoMusicApp(
                                     contentPadding = listPadding,
                                 )
                             }
+                        } else if (pageRoute == AppRoute.DailyDiscovery) {
+                            DailyDiscoveryScreen(
+                                state = dailyDiscovery,
+                                aiOptIn = aiDiscoveryOptIn,
+                                likeStatuses = likeStatuses,
+                                currentSong = player.song,
+                                isPlaying = player.isPlaying,
+                                listState = dailyDiscoveryListState,
+                                contentPadding = listPadding,
+                                onEnableAi = { viewModel.enableAiDailyDiscovery() },
+                                onUseLocalOnly = { viewModel.enableLocalDailyDiscoveryOnly() },
+                                onRefresh = { viewModel.loadDailyDiscovery(forceRefresh = true) },
+                                onOpenPrivacy = { showDailyDiscoveryPrivacy = true },
+                                onPlayAll = { playDailyDiscovery(dailyDiscovery.collection, 0, false) },
+                                onShufflePlay = { playDailyDiscovery(dailyDiscovery.collection, 0, true) },
+                                onTrackClick = { _, index -> playDailyDiscovery(dailyDiscovery.collection, index, false) },
+                                onTrackSwipe = { item ->
+                                    if (item.unavailable || item.song.videoId.isBlank() || item.song.isUnresolvedSpotify) {
+                                        showQueueNotice(dailyDiscoveryUnavailableMsg)
+                                    } else {
+                                        onSongSwipe(item.song)
+                                    }
+                                },
+                                onTrackMore = openDailyDiscoveryMenu,
+                                onFeedback = { item, action ->
+                                    viewModel.submitDailyDiscoveryFeedback(item.song, action, item.genres)
+                                },
+                            )
                         } else if (pageRoute == AppRoute.Moods) {
                             MoodGridPage(
                                 gridState = moodsGridState,
@@ -3306,6 +3401,8 @@ private fun NikoMusicApp(
                                 onEditSignatureApi = { editingSignatureApi = true },
                                 onConfirmBitPerfect = { confirmBitPerfect = it },
                                 onConfirmFixedVolume = { confirmFixedVolume = true },
+                                onClearAiDiscovery = { viewModel.clearDailyDiscoveryData() },
+                                onToggleAiDiscovery = { viewModel.setAiDailyDiscoveryOptIn(it) },
                                 contentPadding = listPadding,
                             )
                         } else if (page != null) {
@@ -3595,6 +3692,31 @@ private fun NikoMusicApp(
                                 listenerName = account?.name,
                                 // Neither shelf is drawn without its callback.
                                 onTopPickClick = openTopPick.takeUnless { hideTopPicks },
+                                dailyDiscoveryContent = if (showDailyDiscoveryHome) {
+                                    {
+                                        DailyDiscoveryHomeSection(
+                                            state = dailyDiscovery,
+                                            aiOptIn = aiDiscoveryOptIn,
+                                            likeStatuses = likeStatuses,
+                                            currentSong = player.song,
+                                            isPlaying = player.isPlaying,
+                                            onEnableAi = { viewModel.enableAiDailyDiscovery() },
+                                            onUseLocalOnly = { viewModel.enableLocalDailyDiscoveryOnly() },
+                                            onRefresh = { viewModel.loadDailyDiscovery(forceRefresh = true) },
+                                            onOpenAll = { navigator.push(AppRoute.DailyDiscovery) },
+                                            onOpenPrivacy = { showDailyDiscoveryPrivacy = true },
+                                            onTrackClick = { _, index ->
+                                                playDailyDiscovery(dailyDiscovery.collection, index, false)
+                                            },
+                                            onTrackMore = openDailyDiscoveryMenu,
+                                            onFeedback = { item, action ->
+                                                viewModel.submitDailyDiscoveryFeedback(item.song, action, item.genres)
+                                            },
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
                                 onMoodClick = playMood.takeUnless { hideHomeMoods },
                                 onMoodsShowAll = { navigator.push(AppRoute.Moods) },
                                 // Nothing on Home is seen while the greeting covers it.
@@ -3993,6 +4115,7 @@ private fun NikoMusicApp(
                         AppRoute.History -> stringResource(R.string.history)
                         is AppRoute.LibraryShowAll -> route.shelf.title
                         is AppRoute.ArtistShelf -> route.shelf.title
+                        AppRoute.DailyDiscovery -> stringResource(R.string.daily_discovery)
                         AppRoute.Moods -> stringResource(R.string.find_your_mood)
                         AppRoute.AccountScrobbling -> stringResource(R.string.account_scrobbling)
                         AppRoute.Sources -> stringResource(R.string.sources)
@@ -4027,6 +4150,7 @@ private fun NikoMusicApp(
                             // The page leads with its own large "Replay", so the bar
                             // stays out of the way until that has been scrolled off.
                             route == AppRoute.Replay -> replayScrolled
+                            route == AppRoute.DailyDiscovery -> dailyDiscoveryScrolled
                             route != null -> true
                             detail != null && detailActiveShelf != null -> true
                             detail != null -> detailScrolled
@@ -4908,6 +5032,47 @@ private fun NikoMusicApp(
                 } else {
                     null
                 },
+                discoveryFeedback = if (menuFromDailyDiscovery) {
+                    dailyDiscovery.feedbackByVideoId[song.videoId]?.action
+                } else {
+                    null
+                },
+                onMoreLikeThis = if (menuFromDailyDiscovery) {
+                    {
+                        viewModel.submitDailyDiscoveryFeedback(
+                            song,
+                            DiscoveryFeedbackAction.MORE_LIKE_THIS,
+                            menuDailyDiscoveryGenres,
+                        )
+                        songActions = null
+                    }
+                } else {
+                    null
+                },
+                onLessLikeThis = if (menuFromDailyDiscovery) {
+                    {
+                        viewModel.submitDailyDiscoveryFeedback(
+                            song,
+                            DiscoveryFeedbackAction.LESS_LIKE_THIS,
+                            menuDailyDiscoveryGenres,
+                        )
+                        songActions = null
+                    }
+                } else {
+                    null
+                },
+                onNotInterested = if (menuFromDailyDiscovery) {
+                    {
+                        viewModel.submitDailyDiscoveryFeedback(
+                            song,
+                            DiscoveryFeedbackAction.NOT_INTERESTED,
+                            menuDailyDiscoveryGenres,
+                        )
+                        songActions = null
+                    }
+                } else {
+                    null
+                },
             )
         }
         // ---- Now Playing ----
@@ -5195,6 +5360,8 @@ private fun NikoMusicApp(
                     songMenuAnchor = null
                     menuFromQueue = false
                     menuFromHistory = false
+                    menuFromDailyDiscovery = false
+                    menuDailyDiscoveryGenres = emptyList()
                 }
             }
         }
@@ -6265,6 +6432,16 @@ private fun NikoMusicApp(
                     confirmBitPerfect = null
                 },
                 onDismiss = { confirmBitPerfect = null },
+            )
+        }
+
+        if (showDailyDiscoveryPrivacy) {
+            DailyDiscoveryPrivacyAlert(
+                hazeState = hazeState,
+                aiOptIn = aiDiscoveryOptIn,
+                onToggleAiOptIn = { viewModel.setAiDailyDiscoveryOptIn(it) },
+                onClearData = { viewModel.clearDailyDiscoveryData() },
+                onDismiss = { showDailyDiscoveryPrivacy = false },
             )
         }
 

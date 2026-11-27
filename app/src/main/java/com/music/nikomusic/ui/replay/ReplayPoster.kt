@@ -767,9 +767,9 @@ private const val POSTER_H = 1920
 
 private const val MARGIN = 72f
 
-/** The mark's drawn size. 300×500 in the vector, so this keeps its proportions. */
-private const val LOGO_W = 26f
-private const val LOGO_H = 44f
+/** The mark's drawn size. 1024×1024 in the vector, so this keeps its proportions. */
+private const val LOGO_W = 38f
+private const val LOGO_H = 38f
 private const val LOGO_GAP = 20f
 
 /** The width type and artwork are laid out in. */

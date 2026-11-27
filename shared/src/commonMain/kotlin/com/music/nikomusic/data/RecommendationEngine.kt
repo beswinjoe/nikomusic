@@ -70,10 +70,17 @@ object RecommendationEngine {
         val discoveredArtists: Set<String> = emptySet(),
         val artistGenres: Map<String, List<String>> = emptyMap(),
         val peakHours: List<Int> = emptyList(),
+        val preferredBpm: Double? = null,
+        val preferredEnergy: Double? = null,
+        val hiddenTrackIds: Set<String> = emptySet(),
+        val moreLikeArtists: Set<String> = emptySet(),
+        val lessLikeArtists: Set<String> = emptySet(),
+        val dislikedGenres: Set<String> = emptySet(),
     ) {
         val isEmpty: Boolean
             get() = artists.isEmpty() && tracks.isEmpty() && likedTrackIds.isEmpty() &&
-                recentTrackIds.isEmpty() && favoriteGenres.isEmpty()
+                recentTrackIds.isEmpty() && favoriteGenres.isEmpty() &&
+                moreLikeArtists.isEmpty() && preferredBpm == null
     }
 
     /** Candidate track along with contextual metadata from its origin shelf/playlist. */
@@ -84,6 +91,11 @@ object RecommendationEngine {
         val isFamiliarSeed: Boolean = false,
         val isNewRelease: Boolean = false,
         val sourceOrder: Int = 0,
+        val bpm: Double? = null,
+        val energy: Double? = null,
+        val genres: List<String> = emptyList(),
+        val aiCurated: Boolean = false,
+        val reasonTag: String? = null,
     )
 
     /** Semantic rules describing how a mood sounds and what contradicts it. */
@@ -480,7 +492,9 @@ object RecommendationEngine {
             val score: Double,
             val isFamiliar: Boolean,
             val isDiscovery: Boolean,
+            val isUnfamiliarArtist: Boolean,
             val primaryArtistKey: String,
+            val primaryGenreKey: String,
         )
 
         val hasStudioCandidates = candidates.any { !it.song.isThirdPartyUpload() }
@@ -489,10 +503,13 @@ object RecommendationEngine {
             val s = candidate.song
             if (s.videoId.isBlank() || s.title.isBlank()) continue
             if (hasStudioCandidates && s.isThirdPartyUpload()) continue
-            if (s.videoId in profile.dislikedTrackIds) continue
+            if (s.videoId in profile.dislikedTrackIds || s.videoId in profile.hiddenTrackIds) continue
             val key = recordingKey(s.title, s.artist).takeIf { it != "::" } ?: s.videoId
             val existing = deduped[key]
-            if (existing == null || (existing.song.isVideo && !s.isVideo)) {
+            if (existing == null ||
+                (!existing.aiCurated && candidate.aiCurated) ||
+                (existing.song.isVideo && !s.isVideo)
+            ) {
                 deduped[key] = candidate
             }
         }
@@ -526,37 +543,45 @@ object RecommendationEngine {
                 s.videoId in profile.recentTrackIds || recKey in profile.recentRecordings
             }
 
-            // Discovery station strictly avoids already known history & likes
+            // Discovery modes strictly avoid already known history & likes
             val isLiked = s.videoId in profile.likedTrackIds || trackSignal?.liked == true
             val isKnownTrack = plays > 0 || isLiked || isRecent
             if (mode == RankingMode.DISCOVERY && isKnownTrack) continue
 
             var score = 0.25
+            if (candidate.aiCurated) score += 0.16
 
-            // 1. Artist taste affinity
+            // 1. Artist taste affinity & explicit More/Less-like-this feedback
             val credits = artistSet(s.artist)
             var maxArtistAffinity = 0.0
             var artistDiscovered = false
-            var matchedArtistGenres = emptySet<String>()
+            var matchedMoreLikeArtist = false
+            var matchedLessLikeArtist = false
             val genreAcc = mutableSetOf<String>()
+            candidate.genres.forEach { g ->
+                val lower = g.lowercase().trim()
+                if (lower.isNotEmpty()) genreAcc += lower
+            }
             for (credit in credits) {
                 artistScores[credit]?.let { aff ->
                     if (aff.score > maxArtistAffinity) maxArtistAffinity = aff.score
                     if (aff.recentlyDiscovered) artistDiscovered = true
                 }
+                if (credit in profile.moreLikeArtists) matchedMoreLikeArtist = true
+                if (credit in profile.lessLikeArtists) matchedLessLikeArtist = true
                 profile.artistGenres[credit]?.forEach { genreAcc += it.lowercase() }
             }
-            matchedArtistGenres = genreAcc
+            val matchedArtistGenres = genreAcc
 
             score += when (mode) {
                 RankingMode.DISCOVERY -> {
-                    // Reward tracks from unexplored artists who share user's genres;
-                    // lightly reward deep cuts by known artists vs total obsession
-                    if (maxArtistAffinity <= 0.05) 0.16 else 0.06
+                    if (maxArtistAffinity <= 0.05) 0.18 else 0.05
                 }
                 else -> maxArtistAffinity * 0.34
             }
             if (artistDiscovered) score += 0.08
+            if (matchedMoreLikeArtist) score += 0.24
+            if (matchedLessLikeArtist) score -= 0.45
 
             // 2. Track play frequency & liked status (personal taste)
             if (isLiked) {
@@ -568,7 +593,6 @@ object RecommendationEngine {
                 val avgListenMs = (trackSignal?.totalMs ?: 0L) / max(1, plays)
                 if (avgListenMs >= 120_000L) score += 0.08
                 else if (avgListenMs >= 60_000L) score += 0.03
-                // Over-saturation penalty when played heavily lately
                 if (plays >= 8) score -= min(0.16, (plays - 7) * 0.025)
             }
 
@@ -581,19 +605,18 @@ object RecommendationEngine {
             } else if (mode == RankingMode.NEW_RELEASE) {
                 if (!isKnownTrack) score += 0.22
                 if (candidate.isNewRelease) score += 0.20
-                if (maxArtistAffinity > 0.1 && !isKnownTrack) score += 0.24 // new release from liked artist!
+                if (maxArtistAffinity > 0.1 && !isKnownTrack) score += 0.24
             } else if (mode == RankingMode.MOOD || mode == RankingMode.SUPERMIX) {
-                // Encourage fresh discoveries alongside favorites
-                if (!isKnownTrack && maxArtistAffinity > 0.15) score += 0.14 // unheard song by artist user likes
+                if (!isKnownTrack && maxArtistAffinity > 0.15) score += 0.14
                 if (isUnheardArtist) score += 0.08
             }
 
-            // 4. Genre preference overlap
+            // 4. Genre preference & negative genre attenuation
             var genreOverlap = 0.0
             for (g in matchedArtistGenres) {
                 genreOverlap += (profile.favoriteGenres[g] ?: 0.0)
+                if (g in profile.dislikedGenres) score -= 0.28
             }
-            // Also check metadata text for preferred genres
             val candidateMeta = "${candidate.sourcePlaylistTitle} ${candidate.sourcePlaylistSubtitle} ${s.albumName.orEmpty()}".lowercase()
             for ((genre, weight) in profile.favoriteGenres) {
                 if (genre.length >= 3 && genre in candidateMeta) {
@@ -602,7 +625,27 @@ object RecommendationEngine {
             }
             score += min(0.24, genreOverlap * 0.24)
 
-            // 5. Mood relevance alignment
+            // 5. Acoustic BPM & energy sweetness matching when analyzed
+            val targetBpm = profile.preferredBpm
+            val candBpm = candidate.bpm
+            if (targetBpm != null && targetBpm in 40.0..240.0 && candBpm != null && candBpm in 40.0..240.0) {
+                val bpmDelta = min(abs(candBpm - targetBpm), abs(candBpm - targetBpm * 2.0))
+                    .let { d -> min(d, abs(candBpm * 2.0 - targetBpm)) }
+                score += when {
+                    bpmDelta <= 8.0 -> 0.12
+                    bpmDelta <= 18.0 -> 0.05
+                    bpmDelta >= 45.0 -> -0.06
+                    else -> 0.0
+                }
+            }
+            val targetEnergy = profile.preferredEnergy
+            val candEnergy = candidate.energy
+            if (targetEnergy != null && candEnergy != null && targetEnergy > 0.0 && candEnergy > 0.0) {
+                val energyDiff = abs(candEnergy - targetEnergy)
+                score += if (energyDiff <= 0.18) 0.08 else if (energyDiff >= 0.48) -0.06 else 0.0
+            }
+
+            // 6. Mood relevance alignment
             if (moodRule != null) {
                 val trackText = "${s.title} ${s.albumName.orEmpty()} $candidateMeta".lowercase()
                 var moodMatch = 0.0
@@ -615,7 +658,7 @@ object RecommendationEngine {
                 score += min(0.32, moodMatch)
             }
 
-            // 6. Recent play & opener fatigue penalty
+            // 7. Recent play & opener fatigue penalty
             if (isRecent) {
                 score -= when (mode) {
                     RankingMode.MOOD, RankingMode.SUPERMIX -> 0.34
@@ -630,7 +673,7 @@ object RecommendationEngine {
                 score -= 0.22
             }
 
-            // 7. Skip penalty (recent skips hurt more)
+            // 8. Skip penalty (recent skips hurt more)
             if (earlySkips > 0 || skipCount > 0) {
                 val recentSkipMult = if (
                     nowMs > 0L && (trackSignal?.lastSkippedMs ?: 0L) > 0L &&
@@ -640,19 +683,22 @@ object RecommendationEngine {
                 score -= min(0.85, penalty)
             }
 
-            // 8. Slight penalty to music videos so audio studio versions lead
+            // 9. Slight penalty to music videos so audio studio versions lead
             if (s.isVideo) score -= 0.14
 
-            // 9. Controlled freshness variation so repeated visits aren't identical
+            // 10. Controlled freshness variation so repeated visits aren't identical
             score += rng.nextDouble() * 0.08
 
             val leadArtist = credits.minOrNull().orEmpty()
+            val primaryGenre = matchedArtistGenres.firstOrNull().orEmpty()
             scored += ScoredTrack(
                 song = s,
                 score = score,
-                isFamiliar = isKnownTrack && !isRecent,
+                isFamiliar = !isUnheardArtist && !isRecent,
                 isDiscovery = isDiscovery,
+                isUnfamiliarArtist = isUnheardArtist,
                 primaryArtistKey = leadArtist,
+                primaryGenreKey = primaryGenre,
             )
         }
 
@@ -663,36 +709,55 @@ object RecommendationEngine {
         val result = ArrayList<Song>(min(limit, pool.size))
         val artistTotalCount = mutableMapOf<String, Int>()
         val recentArtistWindow = ArrayDeque<String>(4)
+        var lastGenre = ""
         val windowArtistGap = 3
-        val maxPerArtistInQueue = if (mode == RankingMode.ARTIST_STATION) 6 else max(2, limit / 12)
+        val maxPerArtistInQueue = when (mode) {
+            RankingMode.ARTIST_STATION -> 6
+            RankingMode.DISCOVERY -> 2
+            else -> max(2, limit / 12)
+        }
         val minHealthyQueue = min(limit, 8)
 
-        // Pass 0: strict per-artist cap + spacing window + familiar/discovery pacing.
-        // Pass 1: relax spacing window & pacing, keeping strict per-artist cap.
-        // Pass 2: only if queue is critically short (< minHealthyQueue), exceed per-artist cap.
         var consecutiveFamiliars = 0
         var consecutiveDiscoveries = 0
+        var unfamiliarPicked = 0
 
         while (result.size < limit && pool.isNotEmpty()) {
             val wantDiscoverySwitch = (mode == RankingMode.MOOD || mode == RankingMode.SUPERMIX) &&
                 !profile.isEmpty && result.isNotEmpty()
+            val enforceNoveltyRatio = mode == RankingMode.DISCOVERY && !profile.isEmpty
             var pickIdx = -1
             val maxPass = if (result.size < minHealthyQueue) 2 else 1
 
             for (pass in 0..maxPass) {
                 val enforceGap = pass == 0
                 val enforceBalance = pass == 0 && wantDiscoverySwitch
+                val enforceDiscoveryMix = pass == 0 && enforceNoveltyRatio
+                val enforceGenreSpread = pass == 0 && lastGenre.isNotEmpty()
                 for (i in pool.indices) {
                     val item = pool[i]
                     val artist = item.primaryArtistKey
                     if (artist.isNotEmpty()) {
                         val count = artistTotalCount[artist] ?: 0
-                        if (pass < 2 && count >= maxPerArtistInQueue) continue
+                        val artistCap = if (mode == RankingMode.DISCOVERY && item.isUnfamiliarArtist && pass == 0) {
+                            1
+                        } else {
+                            maxPerArtistInQueue
+                        }
+                        if (pass < 2 && count >= artistCap) continue
                         if (enforceGap && artist in recentArtistWindow) continue
                     }
                     if (enforceBalance) {
                         if (consecutiveFamiliars >= 2 && item.isFamiliar) continue
                         if (consecutiveDiscoveries >= 3 && item.isDiscovery) continue
+                    }
+                    if (enforceDiscoveryMix && !item.isUnfamiliarArtist) {
+                        val pickedSoFar = result.size.coerceAtLeast(1)
+                        val unfamiliarRatio = unfamiliarPicked.toDouble() / pickedSoFar
+                        if (unfamiliarRatio < 0.65 && pool.any { it.isUnfamiliarArtist }) continue
+                    }
+                    if (enforceGenreSpread && item.primaryGenreKey.isNotEmpty() && item.primaryGenreKey == lastGenre) {
+                        if (pool.any { it.primaryGenreKey != lastGenre }) continue
                     }
                     pickIdx = i
                     break
@@ -703,6 +768,8 @@ object RecommendationEngine {
             if (pickIdx < 0) break
             val chosen = pool.removeAt(pickIdx)
             result += chosen.song
+            if (chosen.isUnfamiliarArtist) unfamiliarPicked++
+            if (chosen.primaryGenreKey.isNotEmpty()) lastGenre = chosen.primaryGenreKey
             if (chosen.primaryArtistKey.isNotEmpty()) {
                 artistTotalCount[chosen.primaryArtistKey] = (artistTotalCount[chosen.primaryArtistKey] ?: 0) + 1
                 recentArtistWindow.addLast(chosen.primaryArtistKey)

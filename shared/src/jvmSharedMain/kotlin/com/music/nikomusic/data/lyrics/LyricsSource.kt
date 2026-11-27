@@ -119,8 +119,8 @@ enum class LyricsSource(
     ),
     MUSIXMATCH(
         label = "Musixmatch",
-        detail = "Whole lines, from the biggest lyrics database there is",
-        wordSynced = false,
+        detail = "Word or line timings, from the biggest lyrics database there is",
+        wordSynced = true,
     ),
     GENIUS(
         label = "Genius",

@@ -42,22 +42,32 @@ object LrcLib {
             synced?.let(::parseLrc)?.takeIf { it.isNotEmpty() }
         }
 
-    private fun exactMatch(title: String, artist: String, seconds: Int): String? {
+    private suspend fun exactMatch(title: String, artist: String, seconds: Int): String? {
         val url = "$BASE/get".toHttpUrl().newBuilder()
             .addQueryParameter("track_name", title)
             .addQueryParameter("artist_name", artist)
             .addQueryParameter("duration", seconds.toString())
             .build()
         val body = get(url.toString()) ?: return null
-        return (json.parseToJsonElement(body) as? JsonObject)
-            ?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
+        val obj = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return null
+        val hitTitle = obj["trackName"]?.jsonPrimitive?.contentOrNull
+        val hitArtist = obj["artistName"]?.jsonPrimitive?.contentOrNull
+        if (hitTitle != null && (!lyricsTitleMatches(hitTitle, title) || !isLyricsVersionCompatible(title, hitTitle))) {
+            return null
+        }
+        if (artist.isNotBlank() && !hitArtist.isNullOrBlank() && !lyricsArtistMatches(hitArtist, artist)) {
+            return null
+        }
+        val d = obj["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+        if (seconds > 0 && d > 0.0 && abs(d - seconds) > 12.0) return null
+        return obj["syncedLyrics"]?.jsonPrimitive?.contentOrNull
     }
 
     /**
      * Fuzzy fallback. Prefers whichever hit is closest in length to what we're
      * actually playing — same song, different edit, would drift otherwise.
      */
-    private fun bestSearchHit(title: String, artist: String, seconds: Int): String? {
+    private suspend fun bestSearchHit(title: String, artist: String, seconds: Int): String? {
         val url = "$BASE/search".toHttpUrl().newBuilder()
             .addQueryParameter("track_name", title)
             .addQueryParameter("artist_name", artist)
@@ -87,12 +97,9 @@ object LrcLib {
             ?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
     }
 
-    private fun get(url: String): String? {
+    private suspend fun get(url: String): String? {
         val request = Request.Builder().url(url).header("User-Agent", AGENT).build()
-        Http.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            return response.body?.string()
-        }
+        return lyricsExecute(Http.client, request)
     }
 
     /**
@@ -102,8 +109,14 @@ object LrcLib {
      * otherwise the line would blink out between two sung phrases. A stamp
      * with nothing after it closes the final line, so it always survives.
      */
+    private data class StagedLrcLine(
+        val timeMs: Long,
+        val rawBody: String,
+        val alignment: LyricAlignment,
+    )
+
     fun parseLrc(lrc: String): List<LyricLine> {
-        val all = lrc.lineSequence().flatMap { line ->
+        val staged = lrc.lineSequence().flatMap { line ->
             // `[00:12.00][00:45.00]Chorus` is one line sung at each stamp: the
             // compressed form many LRC files use for a repeated chorus.
             // Some writers put a space between the stamps; only words end the run.
@@ -117,25 +130,23 @@ object LrcLib {
             // Detect the RTL marker that was written by [toEnhancedLrc].
             val (text, alignment) = stripAlignmentMarker(body)
             stamps.asSequence().map { match ->
-                val (minutes, seconds, fraction) = match.destructured
-                // Two digits mean centiseconds, three mean milliseconds.
-                val fractionMs = when (fraction.length) {
-                    2 -> fraction.toLong() * 10
-                    3 -> fraction.toLong()
-                    else -> 0L
-                }
-                LyricLine(
-                    timeMs = minutes.toLong() * 60_000 + seconds.toLong() * 1_000 + fractionMs,
-                    // Stripped rather than rebuilt from the runs below: the spacing
-                    // and punctuation between two words belong to the line, and
-                    // re-joining the words with single spaces would quietly rewrite
-                    // a line that never had them.
-                    text = text.replace(WORD_STAMP, "").trim(),
-                    words = parseWordRuns(text),
-                    alignment = alignment,
-                )
+                StagedLrcLine(msOf(match), text, alignment)
             }
         }.sortedBy { it.timeMs }.toList()
+
+        val all = staged.mapIndexed { index, entry ->
+            val nextTimeMs = staged.getOrNull(index + 1)?.timeMs
+            LyricLine(
+                timeMs = entry.timeMs,
+                // Stripped rather than rebuilt from the runs below: the spacing
+                // and punctuation between two words belong to the line, and
+                // re-joining the words with single spaces would quietly rewrite
+                // a line that never had them.
+                text = entry.rawBody.replace(WORD_STAMP, "").trim(),
+                words = parseWordRuns(entry.rawBody, nextTimeMs),
+                alignment = entry.alignment,
+            )
+        }
 
         val kept = all.filterIndexed { index, line ->
             if (!line.isGap) return@filterIndexed true
@@ -194,7 +205,7 @@ object LrcLib {
      * Empty for a plain line, which is what keeps [LyricLine.isWordSynced]
      * honest — a line-synced source stays line-synced through this.
      */
-    private fun parseWordRuns(body: String): List<LyricWord> {
+    private fun parseWordRuns(body: String, nextLineTimeMs: Long? = null): List<LyricWord> {
         val marks = WORD_STAMP.findAll(body).toList()
         if (marks.isEmpty()) return emptyList()
         val runs = marks.mapIndexed { index, mark ->
@@ -202,31 +213,40 @@ object LrcLib {
             msOf(mark) to body.substring(mark.range.last + 1, until)
         }
         // The next run's stamp is this one's end — including when that run is
-        // the closing terminator, which is the only thing that gives the last
-        // word of a line an end at all. A run with no space after it is one
-        // syllable of a word that carries on, which is how [toEnhancedLrc]
-        // writes a word whose syllables were timed apart.
+        // the closing terminator. When an A2 writer omitted the closing stamp
+        // after the last word, bound that final word's sweep safely toward the
+        // next line rather than giving it zero duration.
         return wordsFromRuns(
             runs.mapIndexed { index, (startMs, text) ->
-                TimedRun(startMs, runs.getOrNull(index + 1)?.first ?: startMs, text)
+                val endMs = runs.getOrNull(index + 1)?.first ?: if (text.isNotBlank()) {
+                    nextLineTimeMs?.takeIf { it > startMs }?.coerceAtMost(startMs + 3_000L)
+                        ?: (startMs + 800L)
+                } else {
+                    startMs
+                }
+                TimedRun(startMs, endMs, text)
             },
         )
     }
 
     private fun msOf(mark: MatchResult): Long {
-        val (minutes, seconds, fraction) = mark.destructured
+        val hours = mark.groupValues[1].toLongOrNull() ?: 0L
+        val minutes = mark.groupValues[2].toLongOrNull() ?: 0L
+        val seconds = mark.groupValues[3].toLongOrNull() ?: 0L
+        val fraction = mark.groupValues[4]
         val fractionMs = when (fraction.length) {
-            2 -> fraction.toLong() * 10
-            3 -> fraction.toLong()
-            else -> 0L
+            0 -> 0L
+            1 -> fraction.toLong() * 100L
+            2 -> fraction.toLong() * 10L
+            else -> fraction.toLong()
         }
-        return minutes.toLong() * 60_000 + seconds.toLong() * 1_000 + fractionMs
+        return hours * 3_600_000L + minutes * 60_000L + seconds * 1_000L + fractionMs
     }
 
-    private val STAMP = Regex("""\[(\d{1,2}):(\d{2})[.:](\d{2,3})]""")
-    private val WORD_STAMP = Regex("""<(\d{1,3}):(\d{2})[.:](\d{2,3})>""")
+    private val STAMP = Regex("""\[(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
+    private val WORD_STAMP = Regex("""<(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>""")
     private val NOISE = Regex(
-        """\((?:from|feat\.?|official|lyrical|video|audio|remix)[^)]*\)|\[[^]]*]|""" +
+        """\((?:from|feat\.?|official|lyrical|video|audio)[^)]*\)|\[[^]]*]|""" +
             """\b(?:official (?:video|audio|music video)|lyrical|full song|4k video)\b""",
         RegexOption.IGNORE_CASE,
     )

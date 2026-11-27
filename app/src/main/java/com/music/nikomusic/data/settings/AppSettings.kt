@@ -531,6 +531,12 @@ object AppSettings {
     /** Home's Find Your Mood shelf. Explore's moods are a page the listener opened, so they stay. */
     val hideHomeMoods = MutableStateFlow(false)
 
+    /** Explicit user opt-in for anonymized AI backend taste curation in Daily Discovery. */
+    val aiDiscoveryOptIn = MutableStateFlow(false)
+
+    /** Whether Android's Daily Discovery section is shown on the Home feed. */
+    val showDailyDiscoveryHome = MutableStateFlow(true)
+
     /** Music videos are square wherever they show — see [com.music.nikomusic.ui.components.VideoThumbnails]. */
     val squareVideoThumbnails = MutableStateFlow(false)
 
@@ -1135,6 +1141,8 @@ object AppSettings {
         hideHomeVideos.value = prefs.getBoolean(KEY_HIDE_HOME_VIDEOS, false)
         hideTopPicks.value = prefs.getBoolean(KEY_HIDE_TOP_PICKS, false)
         hideHomeMoods.value = prefs.getBoolean(KEY_HIDE_HOME_MOODS, false)
+        aiDiscoveryOptIn.value = prefs.getBoolean(KEY_AI_DISCOVERY_OPT_IN, false)
+        showDailyDiscoveryHome.value = prefs.getBoolean(KEY_SHOW_DAILY_DISCOVERY_HOME, true)
         squareVideoThumbnails.value = prefs.getBoolean(KEY_SQUARE_VIDEO_THUMBNAILS, false)
         VideoThumbnails.square = squareVideoThumbnails.value
         smartVersionAlignment.value = prefs.getBoolean(KEY_SMART_VERSION_ALIGNMENT, true)
@@ -1641,6 +1649,16 @@ object AppSettings {
     fun setHideHomeMoods(value: Boolean) {
         hideHomeMoods.value = value
         prefs.edit().putBoolean(KEY_HIDE_HOME_MOODS, value).apply()
+    }
+
+    fun setAiDiscoveryOptIn(value: Boolean) {
+        aiDiscoveryOptIn.value = value
+        prefs.edit().putBoolean(KEY_AI_DISCOVERY_OPT_IN, value).apply()
+    }
+
+    fun setShowDailyDiscoveryHome(value: Boolean) {
+        showDailyDiscoveryHome.value = value
+        prefs.edit().putBoolean(KEY_SHOW_DAILY_DISCOVERY_HOME, value).apply()
     }
 
     fun setSquareVideoThumbnails(value: Boolean) {
@@ -2481,6 +2499,8 @@ object AppSettings {
     private const val KEY_HIDE_HOME_VIDEOS = "hide_home_videos"
     private const val KEY_HIDE_TOP_PICKS = "hide_top_picks"
     private const val KEY_HIDE_HOME_MOODS = "hide_home_moods"
+    private const val KEY_AI_DISCOVERY_OPT_IN = "ai_discovery_opt_in"
+    private const val KEY_SHOW_DAILY_DISCOVERY_HOME = "show_daily_discovery_home"
     private const val KEY_SQUARE_VIDEO_THUMBNAILS = "square_video_thumbnails"
     private const val KEY_SMART_VERSION_ALIGNMENT = "smart_version_alignment"
     private const val KEY_REDUCE_BLUR = "reduce_dynamic_blur"

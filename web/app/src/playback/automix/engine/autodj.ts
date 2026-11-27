@@ -396,7 +396,7 @@ export class AutoDJ {
 
   private trackRemaining(): number {
     const front = this.host.front();
-    if (!Number.isFinite(front.durationSec) || front.durationSec <= 15) return Infinity;
+    if (!Number.isFinite(front.durationSec) || front.durationSec <= 10) return Infinity;
     const pos = front.expectedTrackTime ?? 0;
     return front.durationSec - pos;
   }

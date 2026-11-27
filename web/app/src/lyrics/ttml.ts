@@ -40,7 +40,9 @@ function spansOf(words: LyricWord[]): string {
 
 export function writeTtml(lines: LyricLine[], language = 'en'): string {
   const sung = lines.filter((l) => !isGap(l));
-  const timed = sung.some((l) => l.timeMs > 0 || l.words.length);
+  const timed = sung.some(
+    (l) => l.timeMs > 0 || l.words.length > 0 || (l.sungUntilMs !== null && l.sungUntilMs > l.timeMs),
+  );
   const wordTimed = sung.some((l) => l.words.length);
   const duet = sung.some((l) => l.alignment === 'end');
 
@@ -52,14 +54,16 @@ export function writeTtml(lines: LyricLine[], language = 'en'): string {
       const lastEnd = Math.max(l.words.at(-1)!.endMs, l.background?.words.at(-1)?.endMs ?? 0);
       const background = l.background?.words.length
         ? ` <span ttm:role="x-bg">${spansOf(l.background.words)}</span>`
-        : '';
+        : l.background?.text
+          ? ` <span ttm:role="x-bg">${escape(l.background.text)}</span>`
+          : '';
       return `<p begin="${clock(l.timeMs)}" end="${clock(lastEnd)}"${agent}>${spansOf(l.words)}${background}</p>`;
     }
-    // A line-timed answering vocal has no timing of its own to hang under the
-    // lead, so it stays in the line, as the provider wrote it.
-    const text = l.background ? `${l.text} ${l.background.text}` : l.text;
+    const background = l.background?.text
+      ? ` <span ttm:role="x-bg">${escape(l.background.text)}</span>`
+      : '';
     const end = l.sungUntilMs ?? next ?? l.timeMs + 5000;
-    return `<p begin="${clock(l.timeMs)}" end="${clock(Math.max(end, l.timeMs))}"${agent}>${escape(text)}</p>`;
+    return `<p begin="${clock(l.timeMs)}" end="${clock(Math.max(end, l.timeMs))}"${agent}>${escape(l.text)}${background}</p>`;
   });
 
   const agents = duet ? '<ttm:agent type="person" xml:id="v1"/><ttm:agent type="other" xml:id="v2"/>' : '';

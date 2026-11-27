@@ -89,7 +89,8 @@ export class LoopDeck {
 
   private dispatch() {
     const now = this.ctx.currentTime;
-    while (this.pending.length && this.pending[0]!.output - now < POST_AHEAD_SEC) {
+    const aheadSec = typeof document !== 'undefined' && document.hidden ? 0.9 : POST_AHEAD_SEC;
+    while (this.pending.length && this.pending[0]!.output - now < aheadSec) {
       const c = this.pending.shift()!;
       const r = this.regionStart;
       this.stretch.schedule({
@@ -100,6 +101,9 @@ export class LoopDeck {
         loopStart: c.loop ? c.loop[0] - r : 0,
         loopEnd: c.loop ? c.loop[1] - r : 0,
       });
+      // The stretch worklet holds only one pending future change; pause here so
+      // wider hidden-tab lookahead never prunes an intermediate beat change.
+      if (c.output > now) break;
     }
     if (!this.pending.length && this.timer !== null) {
       clearInterval(this.timer);

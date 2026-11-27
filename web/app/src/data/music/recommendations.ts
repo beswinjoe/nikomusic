@@ -1054,13 +1054,26 @@ export function differentiateHomeShelves(shelves: readonly Shelf[], profile: Tas
   return out;
 }
 
-/** Filters & re-orders AutoPlay candidates to respect skips, recent repeats, and optional active mood. */
+/** Lightweight musical metadata used to order AutoPlay picks cleanly under AutoMix. */
+export interface SmoothMixTrackHint {
+  bpm: number | null;
+  camelot?: { num: number; letter: 'A' | 'B' } | null;
+  energy?: number | null;
+}
+
+export interface EnhanceAutoplayOptions {
+  automix?: boolean;
+  hints?: ReadonlyMap<string, SmoothMixTrackHint>;
+}
+
+/** Filters & re-orders AutoPlay candidates to respect skips, recent repeats, optional active mood, and AutoMix smoothness. */
 export function enhanceAutoplayTracks(
   existing: readonly Track[],
   candidates: readonly Track[],
   profile: TasteProfileData,
   limit = 10,
   mood?: MoodDefinition | null,
+  options?: EnhanceAutoplayOptions,
 ): Track[] {
   const ranked = rankTracks(
     candidates.map((track) => ({ track })),
@@ -1074,9 +1087,10 @@ export function enhanceAutoplayTracks(
   const seedArtists = last ? artistSet(artistLine(last)) : new Set<string>();
   let prevLead = lastLead;
   const deferred: Track[] = [];
+  const poolLimit = options?.automix ? Math.min(ranked.length, Math.max(limit * 2, limit)) : limit;
 
   for (const track of ranked) {
-    if (out.length >= limit) break;
+    if (out.length >= poolLimit) break;
     if (existing.some((e) => isSameRecording(e, track))) continue;
     const credits = [...artistSet(artistLine(track))];
     const key = credits.sort()[0] ?? '';
@@ -1095,10 +1109,102 @@ export function enhanceAutoplayTracks(
     out.push(track);
   }
   for (const track of deferred) {
-    if (out.length >= limit) break;
+    if (out.length >= poolLimit) break;
     out.push(track);
   }
-  return out;
+  if (!options?.automix || out.length <= 1) return out.slice(0, limit);
+
+  return orderTracksForSmoothMix(last ?? null, out, options.hints, limit);
+}
+
+function inferTrackCluster(track: Track): string {
+  const text = `${track.title} ${track.album?.name ?? ''} ${artistLine(track)}`.toLowerCase();
+  let bestId = '';
+  let bestHits = 0;
+  for (const mood of CORE_MOODS) {
+    let hits = 0;
+    for (const kw of mood.positiveKeywords) {
+      if (text.includes(kw)) hits += 1;
+    }
+    for (const genre of mood.preferredGenres) {
+      if (text.includes(genre)) hits += 1;
+    }
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestId = mood.id;
+    }
+  }
+  return bestId;
+}
+
+function orderTracksForSmoothMix(
+  anchor: Track | null,
+  tracks: readonly Track[],
+  hints: ReadonlyMap<string, SmoothMixTrackHint> | undefined,
+  limit: number,
+): Track[] {
+  const pool = [...tracks];
+  const ordered: Track[] = [];
+  const perGenre = new Map<string, number>();
+  const perArtist = new Map<string, number>();
+  let current = anchor;
+  let prevLead = anchor ? [...artistSet(artistLine(anchor))].sort()[0] ?? '' : '';
+  let prevMood = anchor ? inferTrackCluster(anchor) : '';
+
+  while (ordered.length < limit && pool.length > 0) {
+    const curHint = current ? hints?.get(current.videoId) : undefined;
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < pool.length; i += 1) {
+      const cand = pool[i]!;
+      const candHint = hints?.get(cand.videoId);
+      const lead = [...artistSet(artistLine(cand))].sort()[0] ?? '';
+      const mood = inferTrackCluster(cand);
+      let score = -i * 0.04;
+      if (curHint?.bpm && candHint?.bpm && curHint.bpm > 0 && candHint.bpm > 0) {
+        const dist = Math.min(
+          Math.abs(candHint.bpm - curHint.bpm) / curHint.bpm,
+          Math.abs(candHint.bpm * 2 - curHint.bpm) / curHint.bpm,
+          Math.abs(candHint.bpm / 2 - curHint.bpm) / curHint.bpm,
+        );
+        score += dist <= 0.06 ? 2.4 - dist * 10 : dist <= 0.14 ? 1.2 - (dist - 0.06) * 6 : -1.5 - dist;
+      }
+      if (curHint?.camelot && candHint?.camelot) {
+        const a = curHint.camelot;
+        const b = candHint.camelot;
+        const numDiff = Math.min(Math.abs(a.num - b.num), 12 - Math.abs(a.num - b.num));
+        if (a.num === b.num && a.letter === b.letter) score += 1.1;
+        else if (a.num === b.num && a.letter !== b.letter) score += 0.85;
+        else if (numDiff === 1 && a.letter === b.letter) score += 0.75;
+        else if (numDiff === 1) score += 0.3;
+        else if (numDiff >= 4) score -= 0.8;
+      }
+      if (curHint?.energy != null && candHint?.energy != null) {
+        score += Math.max(-1, 0.8 - Math.abs(candHint.energy - curHint.energy) * 2.2);
+      }
+      if (lead) {
+        if (lead === prevLead) score -= 2.4;
+        score -= (perArtist.get(lead) ?? 0) * 0.7;
+      }
+      // Genre/mood variety penalty keeps sequential AutoMix diverse.
+      if (mood) {
+        if (mood === prevMood && pool.length > 3) score -= 0.85;
+        score -= (perGenre.get(mood) ?? 0) * 0.35;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    const chosen = pool.splice(bestIdx, 1)[0]!;
+    ordered.push(chosen);
+    current = chosen;
+    prevLead = [...artistSet(artistLine(chosen))].sort()[0] ?? '';
+    if (prevLead) perArtist.set(prevLead, (perArtist.get(prevLead) ?? 0) + 1);
+    prevMood = inferTrackCluster(chosen);
+    if (prevMood) perGenre.set(prevMood, (perGenre.get(prevMood) ?? 0) + 1);
+  }
+  return ordered;
 }
 
 /** Suggests the most fitting core mood for the current hour weighted by user preferences. */

@@ -1455,15 +1455,45 @@ private fun clampToMixWindow(plan: TransitionPlan, length: Double, playbackTime:
     val earliestStart = (length - MIX_WINDOW_SECONDS).coerceAtLeast(0.0)
     if (result.transitionStart < earliestStart) {
         val end = result.transitionEnd.coerceAtLeast(earliestStart)
+        var clampedStart = earliestStart
+        // Snap forward to the next aligned beat grid boundary so clamping to the
+        // tail mix window does not break rhythmic phase lock.
+        if (result.beatSeconds > 0.0 && end - earliestStart > 1.5) {
+            val delta = earliestStart - result.transitionStart
+            val beatsForward = kotlin.math.ceil(delta / result.beatSeconds).toInt()
+            val candidate = result.transitionStart + beatsForward * result.beatSeconds
+            if (candidate < end - 0.5) {
+                clampedStart = candidate
+            }
+        }
+        val outShift = (clampedStart - result.transitionStart).coerceAtLeast(0.0)
+        val rate = result.incomingPlaybackRate.takeIf { it.isFinite() && it > 0.0 } ?: 1.0
+        val shiftedCue = (result.incomingCueTime + outShift * rate).let { cue ->
+            if (result.incomingHandoffTime > result.incomingCueTime) {
+                min(cue, result.incomingHandoffTime)
+            } else {
+                cue
+            }
+        }
         result = result.copy(
-            shouldStart = playbackTime >= earliestStart,
-            transitionStart = earliestStart,
+            shouldStart = playbackTime >= clampedStart,
+            transitionStart = clampedStart,
             transitionEnd = end,
-            fadeSeconds = (end - earliestStart).coerceAtLeast(0.0),
+            fadeSeconds = (end - clampedStart).coerceAtLeast(0.0),
+            incomingCueTime = shiftedCue,
         )
     }
     if (result.incomingCueTime > MIX_WINDOW_SECONDS) {
-        result = result.copy(incomingCueTime = MIX_WINDOW_SECONDS)
+        val excess = result.incomingCueTime - MIX_WINDOW_SECONDS
+        val shiftedHandoff = if (result.incomingHandoffTime >= result.incomingCueTime) {
+            max(MIX_WINDOW_SECONDS, result.incomingHandoffTime - excess)
+        } else {
+            result.incomingHandoffTime
+        }
+        result = result.copy(
+            incomingCueTime = MIX_WINDOW_SECONDS,
+            incomingHandoffTime = shiftedHandoff,
+        )
     }
     return result
 }
@@ -1491,7 +1521,7 @@ private fun planTransitionInner(
         return standardTransition(length, playbackTime, standardFade, minFadeSeconds)
     }
 
-    if (length < MIN_SMART_DURATION_SECONDS) {
+    if (length < 15.0) {
         return blocked("short-duration-guard", transitionStart = length, transitionEnd = length)
     }
 
@@ -1527,6 +1557,32 @@ private fun planTransitionInner(
         return blocked("blocked-speech-or-live")
     }
 
+    // Short musical interludes (15s..45s) deserve a compact equal-power handoff
+    // rather than an abrupt cut, capped safely below a quarter of track length.
+    if (length < MIN_SMART_DURATION_SECONDS) {
+        val compactEnd = min(length, finalMixAnchor)
+        val maxSafeFade = max(minFadeSeconds.coerceAtMost(length * 0.25), min(4.0, length * 0.24))
+        val compactFade = clamp(min(standardFade, length * 0.22), min(minFadeSeconds, maxSafeFade), maxSafeFade)
+        val transitionStart = max(length * 0.5, compactEnd - compactFade)
+        val incomingCueTime = if (analysisReadyForTrack(nextAnalysis, nextTrack)) {
+            incomingStartPoint(nextAnalysis)
+        } else {
+            0.0
+        }
+        val started = playbackTime >= transitionStart
+        return TransitionPlan(
+            shouldStart = started,
+            markerVisible = true,
+            transitionStart = transitionStart,
+            transitionEnd = compactEnd,
+            fadeSeconds = (compactEnd - transitionStart).coerceAtLeast(0.0),
+            transitionStyle = TransitionStyle.EQUAL_POWER,
+            incomingCueTime = incomingCueTime,
+            incomingHandoffTime = incomingCueTime,
+            reason = if (started) "smart-short-crossfade" else "before-short-crossfade-window",
+        )
+    }
+
     if (!analysisReadyForTrack(analysis, currentTrack) ||
         !analysisReadyForTrack(nextAnalysis, nextTrack)
     ) {
@@ -1549,16 +1605,83 @@ private fun planTransitionInner(
 
     val policy = assessTransitionTier(analysis, nextAnalysis, advanced)
     if (policy.tier == TransitionTier.PLAIN_CROSSFADE) {
-        val transitionStart = max(0.0, mixAnchor - standardFade)
+        val incomingCueTime = incomingStartPoint(nextAnalysis)
+        val primaryStart = max(0.0, mixAnchor - standardFade)
+        val primaryOverlap = plannedVocalOverlap(
+            analysis = analysis,
+            nextAnalysis = nextAnalysis,
+            transitionStart = primaryStart,
+            transitionEnd = mixAnchor,
+            incomingCueTime = incomingCueTime,
+            incomingPlaybackRate = 1.0,
+        )
+        // If another ranked exit before content end lowers a vocal clash before
+        // we reach it, prefer that exit even on plain equal-power transitions.
+        val reroutedEnd = if (primaryOverlap > VOCAL_REROUTE_OVERLAP && playbackTime < primaryStart) {
+            rankedMixOuts.asSequence()
+                .filter { abs(it.time - mixAnchor) > 1.0 && it.time <= length }
+                .take(MAX_REROUTE_CANDIDATES)
+                .map { it.time }
+                .filter { playbackTime < max(0.0, it - standardFade) }
+                .minByOrNull { endCandidate ->
+                    plannedVocalOverlap(
+                        analysis = analysis,
+                        nextAnalysis = nextAnalysis,
+                        transitionStart = max(0.0, endCandidate - standardFade),
+                        transitionEnd = endCandidate,
+                        incomingCueTime = incomingCueTime,
+                        incomingPlaybackRate = 1.0,
+                    )
+                }?.takeIf { endCandidate ->
+                    plannedVocalOverlap(
+                        analysis = analysis,
+                        nextAnalysis = nextAnalysis,
+                        transitionStart = max(0.0, endCandidate - standardFade),
+                        transitionEnd = endCandidate,
+                        incomingCueTime = incomingCueTime,
+                        incomingPlaybackRate = 1.0,
+                    ) <= primaryOverlap * 0.65
+                } ?: mixAnchor
+        } else {
+            mixAnchor
+        }
+        val tentativeOverlap = plannedVocalOverlap(
+            analysis = analysis,
+            nextAnalysis = nextAnalysis,
+            transitionStart = max(0.0, reroutedEnd - standardFade),
+            transitionEnd = reroutedEnd,
+            incomingCueTime = incomingCueTime,
+            incomingPlaybackRate = 1.0,
+        )
+        val plainFade = if (tentativeOverlap > VOCAL_REROUTE_OVERLAP) {
+            clamp(
+                standardFade * (1.0 - (tentativeOverlap - 0.25).coerceIn(0.0, 0.55)),
+                max(minFadeSeconds, 2.0),
+                standardFade,
+            )
+        } else {
+            standardFade
+        }
+        val transitionStart = max(0.0, reroutedEnd - plainFade)
+        val finalOverlap = plannedVocalOverlap(
+            analysis = analysis,
+            nextAnalysis = nextAnalysis,
+            transitionStart = transitionStart,
+            transitionEnd = reroutedEnd,
+            incomingCueTime = incomingCueTime,
+            incomingPlaybackRate = 1.0,
+        )
         val started = playbackTime >= transitionStart
         return TransitionPlan(
             shouldStart = started,
             markerVisible = true,
             transitionStart = transitionStart,
-            transitionEnd = mixAnchor,
-            fadeSeconds = mixAnchor - transitionStart,
+            transitionEnd = reroutedEnd,
+            fadeSeconds = reroutedEnd - transitionStart,
             transitionStyle = TransitionStyle.EQUAL_POWER,
-            incomingCueTime = incomingStartPoint(nextAnalysis),
+            incomingCueTime = incomingCueTime,
+            incomingHandoffTime = incomingCueTime,
+            vocalOverlap = finalOverlap,
             policyReasons = policy.reasons,
             reason = if (started) "smart-plain-crossfade" else "before-plain-crossfade-window",
         )
@@ -1570,10 +1693,23 @@ private fun planTransitionInner(
     // sides has nothing a DJ gesture can fix: every one of them put two loud,
     // unsynced songs on top of each other mid-arrangement. The listener's own
     // crossfade at the real end of the song, into the incoming intro, is what
-    // sounds right for these.
+    // sounds right for these — trimmed cleanly if both sides still sing.
     if (isUnmixablePair(analysis, nextAnalysis)) {
-        val transitionStart = max(0.0, finalMixAnchor - standardFade)
         val incomingCueTime = incomingStartPoint(nextAnalysis)
+        val initialOverlap = plannedVocalOverlap(
+            analysis = analysis,
+            nextAnalysis = nextAnalysis,
+            transitionStart = max(0.0, finalMixAnchor - standardFade),
+            transitionEnd = finalMixAnchor,
+            incomingCueTime = incomingCueTime,
+            incomingPlaybackRate = 1.0,
+        )
+        val unmixFade = if (initialOverlap > VOCAL_REROUTE_OVERLAP) {
+            clamp(min(standardFade, 3.0), minFadeSeconds, standardFade)
+        } else {
+            standardFade
+        }
+        val transitionStart = max(0.0, finalMixAnchor - unmixFade)
         val started = playbackTime >= transitionStart
         return TransitionPlan(
             shouldStart = started,

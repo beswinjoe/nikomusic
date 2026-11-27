@@ -21,6 +21,17 @@ import com.music.nikomusic.data.AppleArtistPhotos
 import com.music.nikomusic.data.model.ArtistRef
 import com.music.nikomusic.data.model.TopPick
 import com.music.nikomusic.data.model.TopPickMood
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import com.music.nikomusic.data.DailyDiscoveryCollection
+import com.music.nikomusic.data.DailyDiscoveryPlanner
+import com.music.nikomusic.data.DailyDiscoveryRepository
+import com.music.nikomusic.data.DiscoveryFeedbackAction
+import com.music.nikomusic.data.DiscoveryFeedbackEntry
+import com.music.nikomusic.data.DiscoverySource
+import com.music.nikomusic.data.RefreshPolicyResult
+import com.music.nikomusic.data.listentogether.ListenTogether
+import com.music.nikomusic.playback.smart.AnalysisStore
 import com.music.nikomusic.data.stats.ListeningStats
 import com.music.nikomusic.data.stats.ReplayPeriod
 import android.util.Log
@@ -118,6 +129,18 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+/** Snapshot of Android's Daily Discovery collection, feedback, offline state, and rate-limit quota. */
+data class DailyDiscoveryUiState(
+    val collection: DailyDiscoveryCollection? = null,
+    val loading: Boolean = false,
+    val refreshing: Boolean = false,
+    val feedbackByVideoId: Map<String, DiscoveryFeedbackEntry> = emptyMap(),
+    val refreshAllowance: RefreshPolicyResult = RefreshPolicyResult.Allowed(DailyDiscoveryPlanner.MAX_MANUAL_REFRESHES_PER_DAY),
+    val isOffline: Boolean = false,
+    val noticeMessage: String? = null,
+    val errorMessage: String? = null,
+)
+
 /** What the Search tab searches: YouTube Music, or the Local Music folder on this device. */
 enum class SearchSource { YOUTUBE, LIBRARY, ADDONS }
 
@@ -172,6 +195,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _topPicksLoading = MutableStateFlow(false)
     val topPicksLoading: StateFlow<Boolean> = _topPicksLoading.asStateFlow()
     private var topPicksJob: Job? = null
+
+    private val dailyDiscoveryRepo = DailyDiscoveryRepository(
+        filesDirProvider = { getApplication<Application>().filesDir },
+        analysisStore = AnalysisStore { getApplication<Application>().filesDir },
+    )
+    private val _dailyDiscovery = MutableStateFlow(DailyDiscoveryUiState())
+    val dailyDiscovery: StateFlow<DailyDiscoveryUiState> = _dailyDiscovery.asStateFlow()
+    private var dailyDiscoveryJob: Job? = null
+    private var dailyDiscoveryAllowLocalSession = false
 
     private val _explore = MutableStateFlow<UiState<List<MoodGenreSection>>>(UiState.Loading)
     val explore: StateFlow<UiState<List<MoodGenreSection>>> = _explore.asStateFlow()
@@ -402,7 +434,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             emptySet()
         }
         val key = lyricsLookupKey(
-            videoId, sources, AppSettings.lyricsSourceOrder.value, AppSettings.prioritizeSyllableSync.value,
+            videoId = videoId,
+            sources = sources,
+            order = AppSettings.lyricsSourceOrder.value,
+            prioritizeSyllableSync = AppSettings.prioritizeSyllableSync.value,
+            durationMs = durationMs,
+            title = title,
+            artist = artist,
+            localUri = localUri,
         )
         if (lyricsFor == key) return
         // The duration lands a beat after the track, and a database match needs
@@ -1652,6 +1691,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Call when the home tab becomes visible. */
     fun onHomeShown() {
+        refreshDailyDiscoveryIfStale()
         if (!homeStale) return
         homeStale = false
         // A first load already in flight will pick the new play up by itself.
@@ -1867,6 +1907,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // one at the tail.
         _homePendingShelves.value = 1 + YtMusicRepository.HOME_SUPPLEMENT_BROWSE_IDS.size
         loadTopPicks(identity, rebuild = false)
+        loadDailyDiscovery(forceRefresh = false)
         viewModelScope.launch {
             launch {
                 try {
@@ -2022,6 +2063,315 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun noteMoodSelected(mood: TopPickMood) {
         ListeningStats.recordMoodSelection(mood.name)
         TopPicks.noteMoodSelected(mood)
+    }
+
+    // ---- AI Daily Discovery ------------------------------------------------
+
+    private fun isNetworkConnected(): Boolean {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java) ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return true
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    fun enableAiDailyDiscovery() {
+        AppSettings.setAiDiscoveryOptIn(true)
+        dailyDiscoveryAllowLocalSession = true
+        loadDailyDiscovery(forceRefresh = false)
+    }
+
+    fun enableLocalDailyDiscoveryOnly() {
+        dailyDiscoveryAllowLocalSession = true
+        loadDailyDiscovery(forceRefresh = false, allowLocalWhenOptedOut = true)
+    }
+
+    fun setAiDailyDiscoveryOptIn(enabled: Boolean) {
+        AppSettings.setAiDiscoveryOptIn(enabled)
+        if (enabled) {
+            dailyDiscoveryAllowLocalSession = true
+            loadDailyDiscovery(forceRefresh = false)
+        }
+    }
+
+    fun clearDailyDiscoveryData() {
+        dailyDiscoveryJob?.cancel()
+        dailyDiscoveryAllowLocalSession = false
+        viewModelScope.launch {
+            dailyDiscoveryRepo.clearAllData()
+            _dailyDiscovery.value = DailyDiscoveryUiState(
+                collection = null,
+                loading = false,
+                refreshing = false,
+                feedbackByVideoId = emptyMap(),
+                refreshAllowance = RefreshPolicyResult.Allowed(DailyDiscoveryPlanner.MAX_MANUAL_REFRESHES_PER_DAY),
+                isOffline = !isNetworkConnected(),
+                noticeMessage = text(R.string.daily_discovery_data_cleared),
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun consumeDailyDiscoveryNotice() {
+        _dailyDiscovery.update { it.copy(noticeMessage = null) }
+    }
+
+    fun refreshDailyDiscoveryIfStale() {
+        val optIn = AppSettings.aiDiscoveryOptIn.value
+        if (!optIn && !dailyDiscoveryAllowLocalSession) {
+            hydrateDailyDiscoveryFromDisk()
+            return
+        }
+        val current = _dailyDiscovery.value.collection
+        val todayKey = LocalDate.now().toString()
+        if (dailyDiscoveryJob?.isActive == true) return
+        if (current == null || current.dateKey != todayKey || current.listenerKey != listenerKey()) {
+            loadDailyDiscovery(forceRefresh = false)
+        }
+    }
+
+    private fun hydrateDailyDiscoveryFromDisk() {
+        if (dailyDiscoveryJob?.isActive == true) return
+        viewModelScope.launch {
+            val stored = dailyDiscoveryRepo.loadState()
+            val cached = stored.cached
+            if (cached != null && cached.items.isNotEmpty() && cached.listenerKey == listenerKey()) {
+                _dailyDiscovery.update {
+                    it.copy(
+                        collection = cached,
+                        feedbackByVideoId = stored.feedbackByVideoId,
+                        isOffline = !isNetworkConnected(),
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadDailyDiscovery(
+        forceRefresh: Boolean = false,
+        allowLocalWhenOptedOut: Boolean = dailyDiscoveryAllowLocalSession,
+    ) {
+        val optIn = AppSettings.aiDiscoveryOptIn.value
+        val online = isNetworkConnected()
+        val identity = listenerKey()
+
+        if (!optIn && !allowLocalWhenOptedOut) {
+            hydrateDailyDiscoveryFromDisk()
+            return
+        }
+
+        dailyDiscoveryJob?.cancel()
+        dailyDiscoveryJob = viewModelScope.launch {
+            val existing = _dailyDiscovery.value.collection
+            _dailyDiscovery.update {
+                it.copy(
+                    loading = existing == null && !forceRefresh,
+                    refreshing = forceRefresh || existing != null,
+                    isOffline = !online,
+                    errorMessage = null,
+                )
+            }
+
+            val allTimeSummary = runCatching { ListeningStats.summary(ReplayPeriod.ALL_TIME) }.getOrNull()
+            val monthSummary = runCatching { ListeningStats.summary(ReplayPeriod.THIS_MONTH) }.getOrNull()
+            val local = localTaste()
+            val historySongs = runCatching { YtMusicRepository.recentHistory().getOrNull().orEmpty() }.getOrDefault(emptyList())
+
+            val baseProfile = buildDiscoveryProfile(
+                local = local,
+                historySongs = historySongs,
+                likedStatuses = likeStatuses.value,
+                preferredHours = allTimeSummary?.hourOfDay?.takeIf { it.isNotEmpty() }.orEmpty(),
+            )
+            val seedSongs = (local.likedSongs + local.songs + historySongs)
+                .filter { it.videoId.isNotBlank() && likeStatuses.value[it.videoId] != LikeStatus.DISLIKE }
+                .distinctBy { it.videoId }
+                .take(18)
+
+            val homeShelves = (_home.value as? UiState.Success)?.data.orEmpty()
+            val tasteInputs = DailyDiscoveryRepository.TasteInputs(
+                listenerKey = identity,
+                profile = baseProfile,
+                seedSongs = seedSongs,
+                homeShelves = homeShelves,
+                hourOfDay = (monthSummary?.hourOfDay ?: allTimeSummary?.hourOfDay).orEmpty(),
+                regionHints = TopPicks.regionHints(),
+            )
+
+            val result = dailyDiscoveryRepo.loadOrRefresh(
+                taste = tasteInputs,
+                aiOptIn = optIn,
+                backendBaseUrl = ListenTogether.aiBackendBaseUrl(),
+                isNetworkAvailable = online,
+                forceRefresh = forceRefresh,
+            )
+
+            if (identity != listenerKey()) return@launch
+
+            val notice = when (val st = result.status) {
+                is DailyDiscoveryRepository.LoadStatus.RateLimited -> {
+                    if (st.dailyLimitReached) {
+                        getApplication<Application>().getString(
+                            R.string.daily_discovery_rate_limited_daily,
+                            DailyDiscoveryPlanner.MAX_MANUAL_REFRESHES_PER_DAY,
+                        )
+                    } else {
+                        getApplication<Application>().getString(
+                            R.string.daily_discovery_rate_limited_cooldown,
+                            st.waitSeconds.toInt(),
+                        )
+                    }
+                }
+                is DailyDiscoveryRepository.LoadStatus.BackendErrorFallback -> st.message
+                DailyDiscoveryRepository.LoadStatus.Ready -> if (forceRefresh) text(R.string.daily_discovery_refreshed) else null
+                DailyDiscoveryRepository.LoadStatus.CachedOffline -> null
+                DailyDiscoveryRepository.LoadStatus.OfflineNoCache -> text(R.string.daily_discovery_offline_empty)
+                is DailyDiscoveryRepository.LoadStatus.Failed -> st.message
+            }
+
+            _dailyDiscovery.value = DailyDiscoveryUiState(
+                collection = result.collection,
+                loading = false,
+                refreshing = false,
+                feedbackByVideoId = result.state.feedbackByVideoId,
+                refreshAllowance = result.refreshAllowance,
+                isOffline = !online || result.status == DailyDiscoveryRepository.LoadStatus.CachedOffline ||
+                    result.status == DailyDiscoveryRepository.LoadStatus.OfflineNoCache,
+                noticeMessage = notice,
+                errorMessage = (result.status as? DailyDiscoveryRepository.LoadStatus.Failed)?.message
+                    ?.takeIf { result.collection == null },
+            )
+        }
+    }
+
+    private fun buildDiscoveryProfile(
+        local: TopPicks.LocalTaste,
+        historySongs: List<Song>,
+        likedStatuses: Map<String, LikeStatus>,
+        preferredHours: List<Long>,
+    ): RecommendationEngine.ListenerProfile {
+        val tracks = LinkedHashMap<String, RecommendationEngine.TrackFeedback>()
+        for (tf in local.trackStats) {
+            tracks[tf.videoId] = tf
+        }
+        val likedIds = LinkedHashSet<String>()
+        val dislikedIds = LinkedHashSet<String>()
+        for ((vid, status) in likedStatuses) {
+            when (status) {
+                LikeStatus.LIKE -> likedIds += vid
+                LikeStatus.DISLIKE -> dislikedIds += vid
+                LikeStatus.INDIFFERENT -> Unit
+            }
+        }
+        for (song in local.likedSongs) {
+            if (song.videoId !in dislikedIds) {
+                likedIds += song.videoId
+                val existing = tracks[song.videoId]
+                tracks[song.videoId] = (existing ?: RecommendationEngine.TrackFeedback(
+                    videoId = song.videoId,
+                    title = song.title,
+                    artist = song.artist,
+                )).copy(liked = true)
+            }
+        }
+        historySongs.forEachIndexed { idx, song ->
+            if (song.videoId !in tracks) {
+                tracks[song.videoId] = RecommendationEngine.TrackFeedback(
+                    videoId = song.videoId,
+                    title = song.title,
+                    artist = song.artist,
+                    plays = 1,
+                    lastPlayedMs = System.currentTimeMillis() - idx * 300_000L,
+                )
+            }
+        }
+        val artistAffinities = local.artists.mapIndexed { idx, ref ->
+            val key = com.music.nikomusic.data.model.normalizedArtistName(ref.name)
+            RecommendationEngine.ArtistAffinity(
+                name = ref.name,
+                browseId = ref.browseId,
+                plays = (local.artists.size - idx).coerceAtLeast(1),
+                recentlyDiscovered = key in local.discoveredArtists,
+                genres = local.artistGenres[key].orEmpty(),
+            )
+        }
+        val genreMap = LinkedHashMap<String, Double>()
+        local.genres.forEachIndexed { idx, g ->
+            genreMap[g.lowercase(Locale.ROOT)] = 1.0 - (idx * 0.14).coerceAtMost(0.7)
+        }
+        for (genres in local.artistGenres.values) {
+            for (g in genres) {
+                val key = g.lowercase(Locale.ROOT)
+                genreMap[key] = maxOf(genreMap[key] ?: 0.0, 0.35)
+            }
+        }
+        val peakHours = preferredHours.withIndex()
+            .filter { it.value > 0L }
+            .sortedByDescending { it.value }
+            .take(4)
+            .map { it.index }
+
+        return RecommendationEngine.ListenerProfile(
+            artists = artistAffinities,
+            tracks = tracks,
+            recentTrackIds = (local.recentSongIds + historySongs.take(25).map { it.videoId }).toSet(),
+            recentRecordings = (local.songs.take(5) + historySongs.take(20))
+                .mapTo(HashSet()) { RecommendationEngine.recordingKey(it.title, it.artist) },
+            likedTrackIds = likedIds,
+            dislikedTrackIds = dislikedIds,
+            favoriteGenres = genreMap,
+            favoriteMoods = local.moodAffinities,
+            discoveredArtists = local.discoveredArtists,
+            artistGenres = local.artistGenres,
+            peakHours = peakHours,
+        )
+    }
+
+    fun submitDailyDiscoveryFeedback(
+        song: Song,
+        action: DiscoveryFeedbackAction,
+        genres: List<String> = emptyList(),
+    ) {
+        viewModelScope.launch {
+            val updated = dailyDiscoveryRepo.recordFeedback(song, action, genres)
+            val feedbackNotice = when (action) {
+                DiscoveryFeedbackAction.LIKE -> {
+                    if (_signedIn.value) {
+                        setLike(song.videoId, LikeStatus.LIKE)
+                    } else {
+                        LikeState.set(song.videoId, LikeStatus.LIKE)
+                    }
+                    text(R.string.daily_discovery_feedback_liked)
+                }
+                DiscoveryFeedbackAction.MORE_LIKE_THIS -> {
+                    if (_signedIn.value && likeStatusOf(song.videoId) != LikeStatus.LIKE) {
+                        setLike(song.videoId, LikeStatus.LIKE)
+                    } else {
+                        LikeState.set(song.videoId, LikeStatus.LIKE)
+                    }
+                    text(R.string.daily_discovery_feedback_more)
+                }
+                DiscoveryFeedbackAction.NOT_INTERESTED -> {
+                    TopPicks.noteTrackSkipped(song.videoId)
+                    ListeningStats.recordSkip(song, 1_500L, 180_000L)
+                    if (_signedIn.value) {
+                        setLike(song.videoId, LikeStatus.DISLIKE)
+                    }
+                    text(R.string.daily_discovery_feedback_not_interested)
+                }
+                DiscoveryFeedbackAction.LESS_LIKE_THIS -> {
+                    TopPicks.noteTrackSkipped(song.videoId)
+                    ListeningStats.recordSkip(song, 2_000L, 180_000L)
+                    text(R.string.daily_discovery_feedback_less)
+                }
+            }
+            _dailyDiscovery.update { state ->
+                state.copy(
+                    collection = updated.cached,
+                    feedbackByVideoId = updated.feedbackByVideoId,
+                    noticeMessage = feedbackNotice,
+                )
+            }
+        }
     }
 
     /**
@@ -3859,4 +4209,20 @@ internal fun lyricsLookupKey(
     sources: Set<LyricsSource>,
     order: List<LyricsSource>,
     prioritizeSyllableSync: Boolean,
-): List<Any> = listOf(videoId, sources, order, prioritizeSyllableSync)
+    durationMs: Long = 0L,
+    title: String = "",
+    artist: String = "",
+    localUri: String? = null,
+): List<Any> {
+    val durationBucket = if (durationMs <= 0L) 0L else (durationMs + 2_500L) / 5_000L
+    return listOf(
+        videoId,
+        sources,
+        order,
+        prioritizeSyllableSync,
+        durationBucket,
+        title,
+        artist,
+        localUri.orEmpty(),
+    )
+}

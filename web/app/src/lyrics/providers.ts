@@ -188,8 +188,18 @@ export function bestBiniHit(results: BiniHit[], title: string, artist: string, d
 /** Which recording this is, without fetching its words: the ISRC every other source can use. */
 export async function biniIdentify(q: LyricsQuery): Promise<BiniHit | null> {
   if (q.isrc) {
-    const byIsrc = json<{ results?: BiniHit[] }>(await lyricsGet(urlWith('https://lyrics-api.binimum.org/', { isrc: q.isrc })))?.results?.[0];
-    return byIsrc ?? null;
+    const results = json<{ results?: BiniHit[] }>(await lyricsGet(urlWith('https://lyrics-api.binimum.org/', { isrc: q.isrc })))?.results ?? [];
+    const strict = bestBiniHit(results, q.title, q.artist, q.durationMs);
+    if (strict) return strict;
+    const wantedVersion = versionOf(q.title);
+    const secs = q.durationMs / 1000;
+    return (
+      results.find((hit) => {
+        if (hit.track_name && !sameSet(versionOf(hit.track_name), wantedVersion)) return false;
+        if (secs > 0 && hit.duration != null && Math.abs(hit.duration - secs) > 25) return false;
+        return true;
+      }) ?? null
+    );
   }
   const url = urlWith('https://lyrics-api.binimum.org/', { track: q.title, artist: q.artist, album: q.album, duration: seconds(q.durationMs) });
   let results = json<{ results?: BiniHit[] }>(await lyricsGet(url))?.results ?? [];
@@ -216,12 +226,31 @@ export async function bini(q: LyricsQuery, get: SharedGet, hit: BiniHit | null):
 
 // ---- BetterLyrics (BetterLyrics.kt) -----------------------------------------------------------
 
+function matchesOptionalMetadata(raw: string, q: LyricsQuery): boolean {
+  const parsed = json<Obj>(raw);
+  if (!parsed || Array.isArray(parsed)) return true;
+  const hitTitle = firstString(parsed, ['title', 'song', 'track', 'trackName', 'name']);
+  const hitArtist = firstString(parsed, ['artist', 'artistName']) ?? artistNames(parsed) ?? undefined;
+  if (hitTitle && (!titlesMatch(hitTitle, q.title) || !sameSet(versionOf(hitTitle), versionOf(q.title)))) {
+    return false;
+  }
+  if (hitArtist && q.artist && !artistsMatch(hitArtist, q.artist)) {
+    return false;
+  }
+  const rawDur = firstNumber(parsed, ['duration', 'durationMs', 'duration_ms']);
+  if (rawDur && q.durationMs > 0) {
+    const durMs = rawDur < 10_000 ? rawDur * 1000 : rawDur;
+    if (Math.abs(durMs - q.durationMs) > 25_000) return false;
+  }
+  return true;
+}
+
 async function betterLyricsAt(endpoint: string, q: LyricsQuery): Promise<Parsed | null> {
   const body = await lyricsGet(urlWith(endpoint, { s: q.title, a: q.artist, d: seconds(q.durationMs), al: q.album }));
-  const first = body ? parseProvider(body) : null;
+  const first = body && matchesOptionalMetadata(body, q) ? parseProvider(body) : null;
   if (first || !q.artist || leadArtistOf(q.artist) === q.artist) return first;
   const retry = await lyricsGet(urlWith(endpoint, { s: q.title, a: leadArtistOf(q.artist), d: seconds(q.durationMs), al: q.album }));
-  return retry ? parseProvider(retry) : null;
+  return retry && matchesOptionalMetadata(retry, q) ? parseProvider(retry) : null;
 }
 export const betterLyrics = (q: LyricsQuery) => betterLyricsAt('https://lyrics-api.boidu.dev/getLyrics', q);
 export const betterLyricsPortato = (q: LyricsQuery) => betterLyricsAt('https://lyrics-api.boidu.dev/qq/getLyrics', q);
@@ -576,7 +605,7 @@ export async function youtubeCaptions(q: LyricsQuery): Promise<Parsed | null> {
       })
       .filter((l): l is LyricLine => !!l)
       .sort((a, b) => a.timeMs - b.timeMs);
-    return fromLines(lines);
+    return fromLines(withInstrumentalGaps(lines));
   } catch {
     return null;
   }
@@ -680,7 +709,7 @@ export async function kugou(q: LyricsQuery): Promise<Parsed | null> {
 
 // ---- LRCLIB (LrcLib.kt) ---------------------------------------------------------------------------
 
-const LRCLIB_NOISE = /\((?:from|feat\.?|official|lyrical|video|audio|remix)[^)]*\)|\[[^\]]*\]|\b(?:official (?:video|audio|music video)|lyrical|full song|4k video)\b/gi;
+const LRCLIB_NOISE = /\((?:from|feat\.?|official|lyrical|video|audio)[^)]*\)|\[[^\]]*\]|\b(?:official (?:video|audio|music video)|lyrical|full song|4k video)\b/gi;
 const lrclibClean = (s: string) => s.replace(LRCLIB_NOISE, ' ').split(' | ')[0]!.replace(/\s+/g, ' ').trim() || s;
 
 export async function lrclib(q: LyricsQuery): Promise<Parsed | null> {
@@ -798,16 +827,16 @@ export function parseRichSync(body: string): LyricLine[] {
   const entries = json<{ ts: number; te: number; l?: { c: string; o: number }[]; x?: string }[]>(body) ?? [];
   const lines = entries
     .map((entry) => {
-      const lineStart = Math.trunc(entry.ts * 1000);
-      const lineEnd = Math.max(lineStart, Math.trunc(entry.te * 1000));
+      const lineStart = Math.round(entry.ts * 1000);
+      const lineEnd = Math.max(lineStart, Math.round(entry.te * 1000));
       let previous = lineStart;
       const fragments = entry.l ?? [];
       const runs: TimedRun[] = [];
       fragments.forEach((fragment, index) => {
         if (!fragment.c) return;
-        const start = Math.max(lineStart, previous, Math.trunc((entry.ts + fragment.o) * 1000));
+        const start = Math.max(lineStart, previous, Math.round((entry.ts + fragment.o) * 1000));
         const next = fragments[index + 1];
-        const until = next ? Math.trunc((entry.ts + next.o) * 1000) : lineEnd;
+        const until = next ? Math.round((entry.ts + next.o) * 1000) : lineEnd;
         previous = start;
         runs.push({ startMs: start, endMs: Math.max(start, Math.min(lineEnd, until)), raw: fragment.c });
       });
@@ -878,13 +907,13 @@ export async function musixmatch(q: LyricsQuery): Promise<Parsed | null> {
   );
   const body = (subtitle?.subtitle as { subtitle_body?: string } | undefined)?.subtitle_body;
   const entries = json<{ text: string; time: { total: number } }[]>(body ?? null) ?? [];
-  return fromLines(entries.filter((e) => e.text.trim()).map((e) => line(Math.trunc(e.time.total * 1000), e.text.trim())));
+  return fromLines(withInstrumentalGaps(entries.filter((e) => e.text.trim()).map((e) => line(Math.round(e.time.total * 1000), e.text.trim()))));
 }
 
 // ---- Genius (Genius.kt) ---------------------------------------------------------------------------
 
 const GENIUS_NOISE =
-  /\s*[([]\s*(?:from|feat\.?|ft\.?|featuring|with|prod\.?|produced by|official|lyrical|video|audio|remix|music video|visualizer|mv|hd|4k|hq|full song)[^)\]]*[)\]]|\s*\b(?:official\s+(?:music\s+)?(?:video|audio)|lyrical(?:\s+video)?|full\s+song|4k\s+video|hd\s+video|music\s+video)\b/gi;
+  /\s*[([]\s*(?:from|feat\.?|ft\.?|featuring|with|prod\.?|produced by|official|lyrical|video|audio|music video|visualizer|mv|hd|4k|hq|full song)[^)\]]*[)\]]|\s*\b(?:official\s+(?:music\s+)?(?:video|audio)|lyrical(?:\s+video)?|full\s+song|4k\s+video|hd\s+video|music\s+video)\b/gi;
 const geniusClean = (s: string) =>
   s
     .replace(/[♪♫★☆【】《》「」~_]/g, ' ')
@@ -936,7 +965,7 @@ export async function genius(q: LyricsQuery): Promise<Parsed | null> {
     );
     const hits = body?.response?.sections?.find((s) => s.type === 'song')?.hits?.map((h) => h.result).filter((r): r is Obj => !!r) ?? [];
     const t = coreOf(bare || title);
-    const wantedVersion = versionOf(title);
+    const wantedVersion = versionOf(q.title);
     const wantedArtists = artistsOf(artist);
     const scored = hits
       .map((hit) => {

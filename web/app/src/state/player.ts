@@ -378,18 +378,25 @@ async function sungSpans(videoId: string) {
   const { queue } = usePlayer.getState();
   const track = queue.find((e) => e.track.videoId === videoId)?.track;
   if (!track) return null;
-  const [{ lookupLyrics }, { endMs, hasKnownEnd, isGap }, { sungSpansFromLines }] = await Promise.all([
-    import('@/lyrics/repository'),
-    import('@/lyrics/model'),
-    import('@/playback/automix'),
-  ]);
+  const [{ cleanSongSearchTerms, pairedAudioTrack }, { lookupLyrics }, { endMs, hasKnownEnd, isGap }, { sungSpansFromLines }] =
+    await Promise.all([
+      import('@/data/music/api'),
+      import('@/lyrics/repository'),
+      import('@/lyrics/model'),
+      import('@/playback/automix'),
+    ]);
+  const paired = pairedAudioTrack(videoId);
+  const effective = paired ?? track;
+  const rawTitle = effective.title;
+  const rawArtist = artistNames(effective);
+  const cleaned = cleanSongSearchTerms(rawTitle, rawArtist);
   const found = await Promise.race([
     lookupLyrics({
-      videoId,
-      title: track.title,
-      artist: artistNames(track),
-      durationMs: Math.round((track.durationSec ?? 0) * 1000),
-      album: track.album?.name ?? null,
+      videoId: effective.videoId,
+      title: cleaned.title || rawTitle,
+      artist: cleaned.artist,
+      durationMs: Math.round((effective.durationSec ?? 0) * 1000),
+      album: effective.album?.name ?? null,
     }).catch(() => null),
     new Promise<null>((r) => setTimeout(() => r(null), LYRICS_WAIT_MS)),
   ]);
@@ -576,7 +583,9 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
   removeAt(at) {
     const { queue, index } = get();
     if (at === index || at < 0 || at >= queue.length) return;
+    const prevNextId = queue[index + 1]?.track.videoId;
     set({ queue: queue.filter((_, i) => i !== at), index: at < index ? index - 1 : index });
+    reconcileTransitionAfterQueueEdit(prevNextId);
     void refillAutoplay();
     intent();
   },
@@ -584,17 +593,21 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
   move(from, to) {
     const { queue, index } = get();
     if (from <= index || to <= index || from >= queue.length || to >= queue.length || from === to) return;
+    const prevNextId = queue[index + 1]?.track.videoId;
     const next = [...queue];
     const [entry] = next.splice(from, 1);
     next.splice(to, 0, entry!);
     set({ queue: next });
+    reconcileTransitionAfterQueueEdit(prevNextId);
     intent();
   },
 
   clearUpNext() {
     const { queue, index } = get();
+    const prevNextId = queue[index + 1]?.track.videoId;
     const drop = new Set(upcomingUserQueueIndices(queue.map((e) => e.tier), index));
     set({ queue: queue.filter((_, i) => !drop.has(i)) });
+    reconcileTransitionAfterQueueEdit(prevNextId);
     intent();
   },
 
@@ -647,6 +660,7 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
 
   toggleShuffle() {
     const { queue, index, shuffle } = get();
+    const prevNextId = queue[index + 1]?.track.videoId;
     const head = queue.slice(0, index + 1);
     const upcoming = queue.slice(index + 1);
     if (!shuffle) {
@@ -664,6 +678,7 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
       canonical = null;
       set({ shuffle: false, queue: [...head, ...order.map((i) => upcoming[i]!)] });
     }
+    reconcileTransitionAfterQueueEdit(prevNextId);
     saveSettings(get());
   },
 
@@ -681,7 +696,9 @@ export const usePlayer = create<PlayerState>()((set, get) => ({
     else {
       // Turning it off takes the radio out of what's to come.
       const { queue, index } = get();
+      const prevNextId = queue[index + 1]?.track.videoId;
       set({ queue: queue.filter((e, i) => i <= index || e.tier !== 'autoplay') });
+      reconcileTransitionAfterQueueEdit(prevNextId);
     }
   },
 
@@ -755,6 +772,14 @@ function positions(queue: readonly QueueEntry[]): Map<string, number> {
   return new Map(queue.map((e, i) => [e.entryId, i]));
 }
 
+function reconcileTransitionAfterQueueEdit(prevNextId: string | undefined) {
+  const { queue, index } = usePlayer.getState();
+  const nextId = queue[index + 1]?.track.videoId;
+  if (nextId !== prevNextId) {
+    cancelCrossfade();
+  }
+}
+
 function insertUser(tracks: Track[], source: QueueSource | null, isNext: boolean) {
   if (!tracks.length) return;
   const { queue, index } = usePlayer.getState();
@@ -764,8 +789,10 @@ function insertUser(tracks: Track[], source: QueueSource | null, isNext: boolean
     void startAt(0);
     return;
   }
+  const prevNextId = queue[index + 1]?.track.videoId;
   const at = userQueueInsertionIndex(queue, index, isNext);
   usePlayer.setState({ queue: [...queue.slice(0, at), ...entries, ...queue.slice(at)] });
+  reconcileTransitionAfterQueueEdit(prevNextId);
 }
 
 // ---- Loading and moving through the queue -------------------------------------------
@@ -1002,10 +1029,11 @@ function refillAutoplay(force = false, anySeed = false): Promise<void> {
       const { fetchRadio } = await import('@/data/music/api');
       const { candidates } = await fetchRadio(seed.videoId);
       const current = usePlayer.getState();
-      const [{ enhanceAutoplayTracks, moodById }, { getTasteProfile }, { getCachedTasteDiscoveries }] = await Promise.all([
+      const [{ enhanceAutoplayTracks, moodById }, { getTasteProfile }, { getCachedTasteDiscoveries }, { getAllAnalyses }] = await Promise.all([
         import('@/data/music/recommendations'),
         import('@/data/music/tasteProfile'),
         import('@/data/music/aiRecommender'),
+        import('@/playback/automix/db'),
       ]);
       const sourceEntry = current.queue[current.index]?.source;
       const moodId = sourceEntry?.id?.startsWith('mood:') ? sourceEntry.id.slice(5) : null;
@@ -1013,12 +1041,24 @@ function refillAutoplay(force = false, anySeed = false): Promise<void> {
       const matchedFormat = candidates.filter((c) => !c.isVideo);
       const tastePicks = activeMood ? [] : getCachedTasteDiscoveries().slice(0, 8);
       const radioTracks = (matchedFormat.length ? matchedFormat : candidates).map((c) => c.track);
+      const hints = new Map<string, { bpm: number | null; camelot?: { num: number; letter: 'A' | 'B' } | null; energy?: number | null }>();
+      if (current.automix) {
+        const saved = await getAllAnalyses();
+        for (const a of saved) {
+          hints.set(a.fileKey, {
+            bpm: a.bpm,
+            camelot: a.camelot,
+            energy: Number.isFinite(a.energy) ? a.energy : null,
+          });
+        }
+      }
       const rankedExtra = enhanceAutoplayTracks(
         current.queue.map((e) => e.track),
         [...radioTracks, ...tastePicks],
         getTasteProfile(),
         needed,
         activeMood,
+        current.automix ? { automix: true, hints } : undefined,
       );
       const extra = rankedExtra.length
         ? rankedExtra

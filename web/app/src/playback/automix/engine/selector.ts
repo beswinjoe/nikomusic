@@ -96,6 +96,79 @@ export function rankCandidates(
   return candidates;
 }
 
+export interface SmoothTrackOrderItem {
+  id: string;
+  artist?: string;
+  genreKey?: string;
+  bpm?: number | null;
+  camelot?: { num: number; letter: 'A' | 'B' } | null;
+  energy?: number | null;
+}
+
+/**
+ * Reorders station candidates smoothly around an anchor track, balancing BPM
+ * reachability (accounting for half/double time), Camelot harmonic compatibility,
+ * and energy continuity against artist and genre variety penalties.
+ */
+export function orderStationSmoothly<T extends SmoothTrackOrderItem>(
+  anchor: SmoothTrackOrderItem | null,
+  items: readonly T[],
+  limit = items.length,
+): T[] {
+  if (items.length <= 1 || limit <= 0) return items.slice(0, Math.max(0, limit));
+  const pool = [...items];
+  const out: T[] = [];
+  let current = anchor;
+  const artistCounts = new Map<string, number>();
+  const genreCounts = new Map<string, number>();
+  let prevArtist = anchor?.artist?.toLowerCase().trim() || '';
+  let prevGenre = anchor?.genreKey?.toLowerCase().trim() || '';
+
+  while (out.length < limit && pool.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < pool.length; i += 1) {
+      const cand = pool[i]!;
+      let score = -i * 0.03;
+      if (current?.bpm && cand.bpm && current.bpm > 0 && cand.bpm > 0) {
+        const dist = bpmDistance(current.bpm, cand.bpm);
+        score += dist <= 0.06 ? 2.4 - dist * 10 : dist <= 0.14 ? 1.2 - (dist - 0.06) * 6 : -1.5 - dist;
+      }
+      if (current?.camelot && cand.camelot) {
+        score += camelotScore(current.camelot, cand.camelot);
+      }
+      if (current?.energy != null && cand.energy != null && Number.isFinite(current.energy) && Number.isFinite(cand.energy)) {
+        score += Math.max(-1, 0.8 - Math.abs(cand.energy - current.energy) * 2.2);
+      }
+      const artist = cand.artist?.toLowerCase().trim() || '';
+      if (artist) {
+        if (artist === prevArtist) score -= 2.4;
+        const prior = artistCounts.get(artist) ?? 0;
+        if (prior > 0) score -= prior * 0.7;
+      }
+      const genre = cand.genreKey?.toLowerCase().trim() || '';
+      if (genre) {
+        // Prevent repeating the exact same genre/mood tag endlessly when variety is available.
+        if (genre === prevGenre) score -= 0.75;
+        const gPrior = genreCounts.get(genre) ?? 0;
+        if (gPrior > 0) score -= gPrior * 0.35;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    const chosen = pool.splice(bestIdx, 1)[0]!;
+    out.push(chosen);
+    current = chosen;
+    prevArtist = chosen.artist?.toLowerCase().trim() || '';
+    if (prevArtist) artistCounts.set(prevArtist, (artistCounts.get(prevArtist) ?? 0) + 1);
+    prevGenre = chosen.genreKey?.toLowerCase().trim() || '';
+    if (prevGenre) genreCounts.set(prevGenre, (genreCounts.get(prevGenre) ?? 0) + 1);
+  }
+  return out;
+}
+
 /** Relative BPM distance accounting for half/double-time equivalence. */
 function bpmDistance(a: number, b: number): number {
   const candidates = [b, b * 2, b / 2];

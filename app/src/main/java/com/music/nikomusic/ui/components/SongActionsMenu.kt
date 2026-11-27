@@ -21,8 +21,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.ThumbDown
+import androidx.compose.material.icons.rounded.ThumbUp
+import com.music.nikomusic.data.DiscoveryFeedbackAction
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -187,6 +191,11 @@ fun SongActionsMenu(
     resolvingLinks: Boolean = false,
     /** Queue rows already belong to the queue, so hide its insertion actions. */
     fromQueue: Boolean = false,
+    /** Daily Discovery feedback hooks (null outside Daily Discovery). */
+    discoveryFeedback: DiscoveryFeedbackAction? = null,
+    onMoreLikeThis: (() -> Unit)? = null,
+    onLessLikeThis: (() -> Unit)? = null,
+    onNotInterested: (() -> Unit)? = null,
 ) {
     var showingSongInfo by remember(song.videoId) { mutableStateOf(false) }
     var pickingSleepTimer by remember { mutableStateOf(false) }
@@ -316,6 +325,38 @@ fun SongActionsMenu(
         // Where the track goes next, and what is kept of it. The file rows
         // ride in this group rather than one of their own because for a
         // device file they can all be absent, and a group may not be empty.
+        if (onMoreLikeThis != null || onLessLikeThis != null || onNotInterested != null) {
+            if (startsGroup()) IosMenuSeparator()
+            onMoreLikeThis?.let { action ->
+                val active = discoveryFeedback == DiscoveryFeedbackAction.MORE_LIKE_THIS
+                ActionRow(
+                    icon = Icons.Rounded.ThumbUp,
+                    label = stringResource(R.string.more_like_this),
+                    tint = if (active) palette.accent else null,
+                    accent = palette.accent,
+                    onClick = action,
+                )
+            }
+            onLessLikeThis?.let { action ->
+                val active = discoveryFeedback == DiscoveryFeedbackAction.LESS_LIKE_THIS
+                ActionRow(
+                    icon = Icons.Rounded.ThumbDown,
+                    label = stringResource(R.string.less_like_this),
+                    tint = if (active) palette.accent else null,
+                    accent = palette.accent,
+                    onClick = action,
+                )
+            }
+            onNotInterested?.let { action ->
+                ActionRow(
+                    icon = SfIcons.VisibilityOff,
+                    label = stringResource(R.string.not_interested),
+                    accent = palette.accent,
+                    onClick = action,
+                )
+            }
+        }
+
         if (startsGroup()) IosMenuSeparator()
         ActionRow(
             icon = SfIcons.Radio,

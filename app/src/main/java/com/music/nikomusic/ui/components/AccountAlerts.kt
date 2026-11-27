@@ -881,6 +881,89 @@ private fun ChoiceRow(
     }
 }
 
+/** Frosted privacy & opt-in transparency alert for Android's AI Daily Discovery. */
+@Composable
+fun DailyDiscoveryPrivacyAlert(
+    hazeState: HazeState,
+    aiOptIn: Boolean,
+    onToggleAiOptIn: (Boolean) -> Unit,
+    onClearData: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertScaffold(hazeState = hazeState, onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = stringResource(R.string.daily_discovery_privacy_title),
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, fontWeight = FontWeight.W600),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = stringResource(R.string.daily_discovery_privacy_body),
+                modifier = Modifier.padding(top = 8.dp),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 17.sp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = stringResource(R.string.daily_discovery_privacy_never_sent),
+                modifier = Modifier.padding(top = 8.dp),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                textAlign = TextAlign.Center,
+            )
+        }
+        AlertRule()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = ACTION_HEIGHT)
+                .clickable { onToggleAiOptIn(!aiOptIn) }
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.daily_discovery_ai_personalization),
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.daily_discovery_ai_personalization_subtitle),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 15.sp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            IosSwitch(
+                checked = aiOptIn,
+                onCheckedChange = onToggleAiOptIn,
+            )
+        }
+        AlertRule()
+        AlertAction(
+            label = stringResource(R.string.daily_discovery_clear_data),
+            emphasised = false,
+            destructive = true,
+            onClick = {
+                onClearData()
+                onDismiss()
+            },
+        )
+        AlertRule()
+        AlertAction(
+            label = stringResource(R.string.done),
+            emphasised = true,
+            onClick = onDismiss,
+        )
+    }
+}
+
 /** The scrim + frosted card frame shared by every UIAlertController-style dialog. */
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable

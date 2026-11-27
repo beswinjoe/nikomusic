@@ -17,7 +17,7 @@ export const LYRICS_SOURCES = [
   { id: 'youtube-music', label: 'YouTube Music', detail: 'Timed lyrics from the playing video’s Lyrics tab', wordSynced: false },
   { id: 'kugou', label: 'KuGou', detail: 'Whole lines, strong outside the English catalogue', wordSynced: false },
   { id: 'lrclib', label: 'LRCLIB', detail: 'Whole lines only, and always up', wordSynced: false },
-  { id: 'musixmatch', label: 'Musixmatch', detail: 'Whole lines, from the biggest lyrics database there is', wordSynced: false },
+  { id: 'musixmatch', label: 'Musixmatch', detail: 'Word or line timings, from the biggest lyrics database there is', wordSynced: true },
   { id: 'genius', label: 'Genius', detail: 'Plain text fallback, massive web catalogue', wordSynced: false },
 ] as const;
 

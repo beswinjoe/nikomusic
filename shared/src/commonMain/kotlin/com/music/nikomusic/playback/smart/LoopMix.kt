@@ -207,7 +207,9 @@ object LoopMix {
 
         val fold = doubleArrayOf(1.0, 2.0, 0.5).minBy { abs(ln(inBpm / it / outBpm)) }
         val target = inBpm / fold
-        val rampBars = ceil(abs(target - outBpm) / MAX_BPM_PER_BAR).toInt().coerceIn(MIN_RAMP_BARS, MAX_RAMP_BARS)
+        val neededRampBars = ceil(abs(target - outBpm) / MAX_BPM_PER_BAR).toInt()
+        if (neededRampBars > MAX_RAMP_BARS) return null.also { why?.append("tempo ramp too steep") }
+        val rampBars = neededRampBars.coerceIn(MIN_RAMP_BARS, MAX_RAMP_BARS)
         // the incoming loop lets go only at its own loop boundary: round the mix up to whole incoming loops
         val inLoopOutBars = inPick.bars / fold
         val totalBars = (ceil((ENTER_BARS + rampBars + EXIT_BARS) / inLoopOutBars) * inLoopOutBars).roundToInt()
@@ -332,7 +334,15 @@ object LoopMix {
             val loops = candidates(bars)
             if (loops.isEmpty()) continue
             count.loops += loops.size
-            val louds = DoubleArray(loops.size) { quietestBar(analysis.levelWindows, loops[it], bars) }
+            val louds = DoubleArray(loops.size) { index ->
+                val loop = loops[index]
+                if (analysis.contentEndTime > 0.0 && loop.end > analysis.contentEndTime + 0.5) {
+                    0.0
+                } else {
+                    val levelQuiet = quietestBar(analysis.levelWindows, loop, bars)
+                    if (!levelQuiet.isNaN()) levelQuiet else quietestEnergyBar(analysis.energyCurve, loop, bars)
+                }
+            }
             val known = louds.filter { !it.isNaN() }.sorted()
             val typical = if (known.isEmpty()) Double.NaN else known[min(known.size - 1, floor(known.size * 0.6).toInt())]
             for ((index, loop) in loops.withIndex()) {
@@ -385,6 +395,27 @@ object LoopMix {
             val rms = meanRms(windows, loop.start + b * bar, loop.start + (b + 1) * bar)
             if (rms.isNaN()) return Double.NaN
             quietest = min(quietest, rms)
+        }
+        return quietest
+    }
+
+    private fun quietestEnergyBar(samples: List<EnergySample>, loop: Loop, bars: Int): Double {
+        if (samples.isEmpty()) return Double.NaN
+        var quietest = Double.POSITIVE_INFINITY
+        val bar = (loop.end - loop.start) / bars
+        for (b in 0 until bars) {
+            val from = loop.start + b * bar
+            val to = loop.start + (b + 1) * bar
+            var sum = 0.0
+            var count = 0
+            for (sample in samples) {
+                if (sample.time >= from && sample.time < to && sample.energy.isFinite()) {
+                    sum += max(0.0, sample.energy)
+                    count++
+                }
+            }
+            if (count == 0) return Double.NaN
+            quietest = min(quietest, sum / count)
         }
         return quietest
     }

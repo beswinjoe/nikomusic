@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListState
 import com.music.nikomusic.ui.components.ShelfRow
 import androidx.compose.foundation.lazy.items
@@ -155,6 +156,8 @@ fun HomeScreen(
     artworkMotion: Boolean = true,
     /** The Replay year story's button beside the wordmark, or null for none. See [ReplayYearButton]. */
     replayYear: ReplayYearBadge? = null,
+    /** Optional Android-native Liquid Glass Daily Discovery shelf right below Top Picks. */
+    dailyDiscoveryContent: (@Composable LazyItemScope.() -> Unit)? = null,
 ) {
     // Top Picks' pictures and motion wait for the feed — see LocalArtworkImages.
     val feedReady = state !is UiState.Loading
@@ -212,6 +215,9 @@ fun HomeScreen(
                     }
                     topPicks == null && topPicksLoading -> topPicksSkeleton()
                 }
+            }
+            if (dailyDiscoveryContent != null) {
+                item(key = "daily-discovery", content = dailyDiscoveryContent)
             }
             when (state) {
                 is UiState.Loading -> {
@@ -499,8 +505,8 @@ private fun HomeTitle(
 /** The wordmark's height against the heading's font size. */
 private const val LOGO_TO_FONT = 0.9f
 
-/** ic_logo's viewport, 300 x 500. */
-private const val LOGO_ASPECT = 300f / 500f
+/** ic_logo's viewport, 1024 x 1024. */
+private const val LOGO_ASPECT = 1f
 
 /**
  * Shared by the home feed, Explore and Library so headings line up across tabs.

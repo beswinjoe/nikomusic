@@ -1,23 +1,14 @@
 <!--
-  Status-bar / notification variant of the NikoMusic mark (assets/LogoTransparent.svg).
-
-  Notification small icons are drawn as a silhouette: the system throws away
-  every colour and keeps only the alpha channel, so the fill has to be opaque
-  white. The source art is 300x500, scaled to fit cleanly centred inside the
-  22x22 content box Android expects inside a 24x24 canvas.
+  Status-bar / notification silhouette of the Niko Music emblem.
+  Pure white opaque cutout sized to 20.4dp inside a 24x24 canvas.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-  <group
-      android:scaleX="0.040000"
-      android:scaleY="0.040000"
-      android:translateX="6.0000"
-      android:translateY="2.0000">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M111.41,29.65L270.44,0.91L166.77,196.88L299.50,172.94L49.06,499.09L130.53,281.78L0.50,305.48Z"/>
-  </group>
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:fillType="evenOdd"
+      android:pathData="M15.677,2.486A10.200,10.200 0 1,1 12.306,1.805C11.264,5.590 10.003,9.361 8.987,13.137L11.595,12.760L9.520,19.873L15.205,10.743L12.258,11.062L15.677,2.486ZM8.663,12.403L9.073,10.986C8.575,11.042 8.120,11.438 7.627,11.445L7.969,10.871L7.590,10.967C6.819,11.440 5.126,11.338 5.355,12.627C5.584,13.275 6.364,13.260 6.870,12.966L8.663,12.403ZM8.594,8.729L8.118,9.626C8.637,9.541 9.172,9.286 9.666,9.083L10.288,6.848C9.299,7.145 8.347,7.699 7.356,7.934L7.828,6.990C6.859,7.436 5.817,7.759 4.865,8.221L4.565,8.636C4.492,8.878 4.516,9.142 4.635,9.366L5.019,9.742L5.498,9.851L8.594,8.729ZM9.417,15.500L9.073,16.154L10.190,15.809L10.669,14.216L8.211,14.960L8.562,14.291C7.744,14.615 6.805,14.756 6.072,15.246C5.951,15.421 5.892,15.640 5.950,15.851L6.170,16.202L6.487,16.351C7.493,16.254 8.431,15.683 9.417,15.500ZM13.937,15.085L14.512,14.670L13.447,14.526L12.601,15.883C13.379,16.049 14.245,15.949 15.017,16.170L14.406,16.585L14.628,16.643C15.482,16.514 16.419,17.877 17.068,16.873L17.131,16.521L17.030,16.202C16.199,15.421 14.986,15.367 13.937,15.085ZM15.821,12.052L16.523,11.669L15.426,11.367C15.079,11.866 14.696,12.405 14.451,12.946L16.223,13.233L15.709,13.521L15.905,13.631C16.642,13.747 17.431,14.758 18.114,13.999L18.279,13.680L18.271,13.265C17.818,12.377 16.645,12.373 15.821,12.052ZM15.566,8.221L16.397,7.646C15.735,7.475 14.926,7.441 14.213,7.367L13.479,9.283C14.694,9.439 15.985,9.444 17.170,9.690L16.293,10.264L16.703,10.337C17.670,10.296 19.017,11.668 19.559,10.264L19.568,9.785L19.417,9.486C18.375,8.529 16.841,8.618 15.566,8.221Z"/>
 </vector>

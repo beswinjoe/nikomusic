@@ -100,13 +100,26 @@ suspend fun loadAutoplayTracks(
     existing: List<Song>,
     seedSong: Song,
     limit: Int = MAX_QUEUED_AUTOPLAY,
+    analysisLookup: ((String) -> com.music.nikomusic.playback.smart.TrackAnalysis?)? = null,
 ): Result<List<Song>> {
     val seed = youtubeSeedFor(seedSong) ?: return Result.success(emptyList())
     // A music video plays on with music videos, as YouTube Music does — unless
     // they would only be converted again, when the station's songs are the answer.
     val videos = seedSong.isVideo && seed == seedSong.videoId && !MusicOnlyPlayback.isActive()
     val related = YtMusicRepository.radio(seed, preferVideo = videos).getOrElse { return Result.failure(it) }
-    val extra = QueueBuilder.extend(existing, related, limit, preferVideos = videos)
+    val smoothOrdering = com.music.nikomusic.data.settings.AppSettings.smartFadeEnabled.value && analysisLookup != null
+    val poolLimit = if (smoothOrdering) minOf(related.size, maxOf(limit * 2, limit)) else limit
+    val filtered = QueueBuilder.extend(existing, related, poolLimit, preferVideos = videos)
+    val extra = if (smoothOrdering && filtered.size > 1) {
+        QueueBuilder.orderForSmoothMix(
+            anchor = existing.lastOrNull() ?: seedSong,
+            tracks = filtered,
+            analyses = analysisLookup!!,
+            limit = limit,
+        )
+    } else {
+        filtered
+    }
     if (extra.isEmpty()) return Result.success(emptyList())
 
     return Result.success(extra.map {

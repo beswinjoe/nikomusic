@@ -67,7 +67,7 @@ object Genius {
         }.getOrNull()
     }
 
-    private fun scrapeLyrics(title: String, artist: String): List<LyricLine>? {
+    private suspend fun scrapeLyrics(title: String, artist: String): List<LyricLine>? {
         val cleanTitle = cleanQuery(title)
         val cleanArtist = cleanQuery(artist)
 
@@ -105,7 +105,7 @@ object Genius {
 
         // 2. Extracted artist + title without brackets
         if (extractedArtist.isNotBlank() && titleWithoutBrackets.isNotBlank() && titleWithoutBrackets != extractedTitle) {
-            searchAttempts.add(SearchAttempt("$extractedArtist $titleWithoutBrackets".trim(), titleWithoutBrackets, extractedArtist))
+            searchAttempts.add(SearchAttempt("$extractedArtist $titleWithoutBrackets".trim(), extractedTitle, extractedArtist))
         }
 
         // 3. Clean artist + clean title (in case separator wasn't Artist - Title)
@@ -116,16 +116,22 @@ object Genius {
 
         // 4. Standalone extracted title without artist prefix
         if (titleWithoutBrackets.isNotBlank()) {
-            searchAttempts.add(SearchAttempt(titleWithoutBrackets, titleWithoutBrackets, extractedArtist))
+            searchAttempts.add(SearchAttempt(titleWithoutBrackets, extractedTitle, extractedArtist))
         } else if (extractedTitle.isNotBlank()) {
             searchAttempts.add(SearchAttempt(extractedTitle, extractedTitle, extractedArtist))
         }
 
         val distinctAttempts = searchAttempts.distinctBy { it.query }
 
-        val songUrl = distinctAttempts.asSequence()
-            .mapNotNull { attempt -> searchSongUrl(attempt.query, attempt.title, attempt.artist) }
-            .firstOrNull() ?: return null
+        var songUrl: String? = null
+        for (attempt in distinctAttempts) {
+            val found = searchSongUrl(attempt.query, attempt.title, attempt.artist)
+            if (found != null) {
+                songUrl = found
+                break
+            }
+        }
+        if (songUrl == null) return null
 
         val html = fetchHtml(songUrl)
         if (html.isNullOrBlank()) return null
@@ -138,11 +144,11 @@ object Genius {
     /**
      * Searches Genius for the track and returns the song's page URL.
      */
-    internal fun searchSongUrl(cleanTitle: String, cleanArtist: String): String? {
+    internal suspend fun searchSongUrl(cleanTitle: String, cleanArtist: String): String? {
         return searchSongUrl("$cleanArtist $cleanTitle".trim(), cleanTitle, cleanArtist)
     }
 
-    private fun searchSongUrl(query: String, targetTitle: String, targetArtist: String): String? {
+    private suspend fun searchSongUrl(query: String, targetTitle: String, targetArtist: String): String? {
         val url = "https://genius.com/api/search/multi?q=${URLEncoder.encode(query, "UTF-8")}"
         val responseBody = httpGet(url) ?: return null
 
@@ -330,19 +336,17 @@ object Genius {
         val artist: String,
     )
 
-    private fun httpGet(url: String): String? = runCatching {
+    private suspend fun httpGet(url: String): String? = runCatching {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
             .header("Accept-Language", "en-US,en;q=0.9")
             .build()
-        httpClient.newCall(request).execute().use { response ->
-            if (response.isSuccessful) response.body?.string() else null
-        }
+        lyricsExecute(httpClient, request)
     }.getOrNull()
 
-    private fun fetchHtml(url: String): String? = httpGet(url)
+    private suspend fun fetchHtml(url: String): String? = httpGet(url)
 
     private val TITLE_SEPARATOR by lazy { Regex("""\s*[-–—:]\s*""") }
     private val DECORATIVE_CHARS by lazy { Regex("""[♪♫★☆【】《》「」~_]""") }
@@ -351,7 +355,7 @@ object Genius {
     }
     private val NOISE by lazy {
         Regex(
-            """\s*[(\[]\s*(?:from|feat\.?|ft\.?|featuring|with|prod\.?|produced by|official|lyrical|video|audio|remix|music video|visualizer|mv|hd|4k|hq|full song)[^)\]]*[)\]]|""" +
+            """\s*[(\[]\s*(?:from|feat\.?|ft\.?|featuring|with|prod\.?|produced by|official|lyrical|video|audio|music video|visualizer|mv|hd|4k|hq|full song)[^)\]]*[)\]]|""" +
                 """\s*\b(?:official\s+(?:music\s+)?(?:video|audio)|lyrical(?:\s+video)?|full\s+song|4k\s+video|hd\s+video|music\s+video)\b""",
             RegexOption.IGNORE_CASE,
         )

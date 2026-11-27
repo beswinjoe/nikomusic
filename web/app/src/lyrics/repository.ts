@@ -69,7 +69,7 @@ function toResult(source: LyricsSourceId, parsed: Parsed): LyricsResult {
     lines,
     ttml: parsed.ttml ?? writeTtml(lines),
     wordSynced: lines.some((l) => l.words.length),
-    synced: lines.some((l) => l.timeMs > 0 || l.words.length),
+    synced: lines.some((l) => l.timeMs > 0 || l.words.length > 0 || (l.sungUntilMs !== null && l.sungUntilMs > l.timeMs)),
   };
 }
 
@@ -87,10 +87,14 @@ export async function lookupLyrics(track: LyricsTrack, { only, onSource }: Looku
   const sequence = only ? [only] : enabledSources();
   if (!sequence.length) return null;
   const { paxsenixKey, preferSyllables } = useLyricsSettings.getState();
-  // preferSyllables picks a different winner from the same answers, so it is part of the key.
-  const key = `${track.videoId}|${track.durationMs}|${track.title}|${track.artist}|${only ?? ''}|${sequence.join(',')}|${preferSyllables}`;
+  // preferSyllables, album, and paxsenixKey affect provider results and winner selection.
+  const key = `${track.videoId}|${track.durationMs}|${track.title}|${track.artist}|${track.album ?? ''}|${only ?? ''}|${sequence.join(',')}|${preferSyllables}|${paxsenixKey ? 'k' : ''}`;
   const cached = cache.get(key);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.result;
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached.result;
+  }
 
   const query: providers.LyricsQuery = {
     videoId: track.videoId,
@@ -190,6 +194,11 @@ export async function lookupLyrics(track: LyricsTrack, { only, onSource }: Looku
     else plain ??= found;
   }
   winner ??= lineSynced ?? plain;
+  cache.delete(key);
   cache.set(key, { at: Date.now(), result: winner });
+  if (cache.size > 120) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
   return winner;
 }

@@ -33,10 +33,32 @@ export function createAutomixGraph(
   onUpdate?: (snap: AutoDJSnapshot) => void,
 ): AutomixGraph {
   const ctx = new AudioContext({ latencyHint: 'playback' });
-  void ctx.resume();
+  void ctx.resume().catch(() => {});
+  if (typeof document !== 'undefined') {
+    const resumeIfNeeded = () => {
+      if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+    };
+    document.addEventListener('pointerdown', resumeIfNeeded, { passive: true });
+    document.addEventListener('keydown', resumeIfNeeded, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) resumeIfNeeded();
+    });
+  }
   const master = new GainNode(ctx, { gain: 1 });
   const spatial = new WebSpatialProcessor(ctx);
-  master.connect(spatial.input);
+  if (typeof DynamicsCompressorNode !== 'undefined') {
+    const limiter = new DynamicsCompressorNode(ctx, {
+      threshold: -1.5,
+      knee: 3,
+      ratio: 12,
+      attack: 0.002,
+      release: 0.08,
+    });
+    master.connect(limiter);
+    limiter.connect(spatial.input);
+  } else {
+    master.connect(spatial.input);
+  }
   spatial.output.connect(ctx.destination);
   const decks = audios.map((audio, n) => new Deck(n === 0 ? 'A' : 'B', ctx, audio, master));
   // the loop mix's stretch decks (AutoMix's own), built the first time a loop mix is prepared

@@ -285,7 +285,7 @@ object TtmlLyrics {
      */
     fun time(value: String?): Long? {
         val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        if (raw.endsWith("ms")) return raw.dropLast(2).toDoubleOrNull()?.toLong()
+        if (raw.endsWith("ms")) return raw.dropLast(2).toDoubleOrNull()?.let { kotlin.math.round(it).toLong() }
         val stripped = raw.removeSuffix("s")
         val parts = stripped.split(':')
         val seconds = when (parts.size) {
@@ -298,7 +298,7 @@ object TtmlLyrics {
             }
             else -> null
         } ?: return null
-        return (seconds * 1000).toLong()
+        return kotlin.math.round(seconds * 1000).toLong()
     }
 
     private sealed interface Piece {

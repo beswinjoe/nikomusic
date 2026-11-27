@@ -401,11 +401,13 @@ export function scheduleLoopMix(plan: LoopMixPlan, outDeck: LoopDeck, inDeck: Lo
   const enterEnd = beatTimes[rampFrom]!;
   const rampEnd = beatTimes[rampTo]!;
   ig.setValueAtTime(0, t0);
-  ig.linearRampToValueAtTime(0.55, enterEnd);
-  og.setValueAtTime(1, enterEnd);
-  og.linearRampToValueAtTime(0.6, rampEnd);
-  ig.linearRampToValueAtTime(1, rampEnd);
+  ig.linearRampToValueAtTime(0.5, enterEnd);
+  og.setValueAtTime(1, enterEnd - Math.min(0.02, (enterEnd - t0) * 0.1));
+  og.linearRampToValueAtTime(0.82, enterEnd);
+  og.linearRampToValueAtTime(0.5, rampEnd);
+  ig.linearRampToValueAtTime(0.86, rampEnd);
   og.linearRampToValueAtTime(0, releaseAt);
+  ig.linearRampToValueAtTime(1, releaseAt);
   ig.setValueAtTime(1, elementAt);
   ig.linearRampToValueAtTime(0, elementAt + HANDOVER_SEC);
 

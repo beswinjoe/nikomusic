@@ -86,6 +86,7 @@ const FULL_SIZE =
   ':host([data-full]) .lyrics-container { --lyplus-font-size-base: var(--nikomusic-lyric-size, 34px);' +
   ' --am-lyrics-line-height: 1.2; --am-lyrics-line-spacing: calc(var(--nikomusic-lyric-size, 34px) * 0.7);' +
   ' --lyrics-scroll-padding-top: 30%; --am-lyrics-inline-padding: 0px; }';
+const PAUSED_CSS = ':host([data-paused]) * { animation-play-state: paused !important; transition: none !important; }';
 
 /**
  * am-lyrics, exactly as it is, fed our TTML and a steered clock (prompt §10.2).
@@ -99,7 +100,6 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
   const element = useRef<AmLyricsElement | null>(null);
   const deck = usePlayer((s) => s.deck);
   const mixing = usePlayer((s) => s.mixing);
-  const status = usePlayer((s) => s.status);
   const videoId = usePlayer((s) => s.nowPlaying?.videoId);
 
   // Created by hand, with its TTML set before it's attached: am-lyrics starts
@@ -130,7 +130,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       const root = el.shadowRoot;
       if (!root) return;
       const sheet = new CSSStyleSheet();
-      sheet.replaceSync(HIDE_FOOTER + FAR_LINES + FULL_SIZE);
+      sheet.replaceSync(HIDE_FOOTER + FAR_LINES + FULL_SIZE + PAUSED_CSS);
       root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
       // The full-screen column fades its top edge, but am-lyrics' toolbar
       // (romanize, translate, download) sits at the top of the same scroller
@@ -183,6 +183,16 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       frame = requestAnimationFrame(tick);
       return () => cancelAnimationFrame(frame);
     }
+    const syncShadowAnimations = (paused: boolean) => {
+      el.toggleAttribute('data-paused', paused);
+      el.shadowRoot?.getAnimations?.().forEach((anim) => {
+        if (paused) {
+          if (anim.playState === 'running') anim.pause();
+        } else if (anim.playState === 'paused') {
+          anim.play();
+        }
+      });
+    };
     const isTrackLoading = usePlayer.getState().status === 'loading';
     const initialMs = isTrackLoading ? 0 : Math.trunc(audio.currentTime * 1000);
     const clock = new LyricClock(initialMs);
@@ -191,7 +201,12 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     let frame = 0;
     const tick = () => {
       const now = performance.now();
-      const sec = usePlayer.getState().status === 'loading' ? 0 : audio.currentTime;
+      const loading = usePlayer.getState().status === 'loading';
+      if (loading || audio.paused) {
+        hold();
+        return;
+      }
+      const sec = audio.currentTime;
       if (sec < lastAudioSec - 1.2 || sec > lastAudioSec + 2.5) discontinuity++;
       lastAudioSec = sec;
       // The reading and its stamp are taken together.
@@ -206,10 +221,16 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       const ms = Math.trunc(sec * 1000);
       clock.hold(ms, performance.now());
       el.currentTime = ms;
+      syncShadowAnimations(true);
     };
     const resume = () => {
       cancelAnimationFrame(frame);
+      if (usePlayer.getState().status === 'loading' || audio.paused) {
+        hold();
+        return;
+      }
       if (el.isUserScrolling) el.isUserScrolling = false;
+      syncShadowAnimations(false);
       clock.restart();
       frame = requestAnimationFrame(tick);
     };
@@ -224,6 +245,11 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       else resume();
     };
     const onPlaying = () => resume();
+    const unsubStatus = usePlayer.subscribe((state, prev) => {
+      if (state.status === prev.status) return;
+      if (state.status === 'loading' || state.status === 'paused') hold();
+      else if (state.status === 'playing' && !audio.paused) resume();
+    });
     audio.addEventListener('seeking', onSeeking);
     audio.addEventListener('seeked', onSeeking);
     audio.addEventListener('loadedmetadata', onMediaReset);
@@ -236,6 +262,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     else resume();
     return () => {
       cancelAnimationFrame(frame);
+      unsubStatus();
       audio.removeEventListener('seeking', onSeeking);
       audio.removeEventListener('seeked', onSeeking);
       audio.removeEventListener('loadedmetadata', onMediaReset);
@@ -245,7 +272,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       audio.removeEventListener('playing', onPlaying);
       audio.removeEventListener('canplay', onPlaying);
     };
-  }, [deck, videoId, ttml, mixing, status]);
+  }, [deck, videoId, ttml, mixing]);
 
   // am-lyrics renders and scrolls itself; it only needs the space. Full screen fades it out at the top and bottom.
   return (
@@ -269,7 +296,7 @@ function useUngranted(): string[] {
 const NO_STATES: Partial<Record<LyricsSourceId, SourceState>> = {};
 
 /** The provider picker: which provider these lyrics are from, and the others' answers for this track. */
-function ProviderPicker({ current, full }: { current: LyricsSourceId | null; full: boolean }) {
+function ProviderPicker({ current, full, unsynced }: { current: LyricsSourceId | null; full: boolean; unsynced: boolean }) {
   const videoId = usePlayer((s) => s.nowPlaying?.videoId ?? '');
   const states = useLyricsUi((s) => s.states[videoId]) ?? NO_STATES;
   const picked = useLyricsUi((s) => s.picked[videoId]);
@@ -288,14 +315,21 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
           : 'flex items-center justify-between px-4 pt-4 pb-1'
       }
     >
-      <button
-        className="inline-flex items-center gap-1 rounded-[8px] px-2 py-1 type-callout-emphasized text-secondary hover:bg-quinary"
-        aria-haspopup="menu"
-        onClick={(e) => setAnchor(e.currentTarget)}
-      >
-        <span>{label}</span>
-        <ChevronDown size={14} />
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          className="inline-flex items-center gap-1 rounded-[8px] px-2 py-1 type-callout-emphasized text-secondary hover:bg-quinary"
+          aria-haspopup="menu"
+          onClick={(e) => setAnchor(e.currentTarget)}
+        >
+          <span>{label}</span>
+          <ChevronDown size={14} />
+        </button>
+        {unsynced && (
+          <span className="rounded-[6px] bg-white/[0.08] px-2 py-0.5 type-[500_11px/14px] text-secondary">
+            Unsynced
+          </span>
+        )}
+      </div>
       <button
         className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary"
         aria-label="Lyric settings"
@@ -427,7 +461,7 @@ export function LyricsPanel({ variant = 'panel' }: { variant?: 'panel' | 'full' 
   return (
     <div className={full ? `${panel} ${fullSizes}` : panel}>
       {canvas && variant === 'panel' && <CanvasBackdrop url={canvas} />}
-      <ProviderPicker current={result?.source ?? null} full={full} />
+      <ProviderPicker current={result?.source ?? null} full={full} unsynced={Boolean(result && !result.synced)} />
       {/* Only worth raising when nothing was found: then the hosts behind the extension might have it. */}
       {ungranted.length > 0 && !result && !lyrics.isFetching && <PermissionNotice origins={ungranted} />}
       {!hasTrack ? (

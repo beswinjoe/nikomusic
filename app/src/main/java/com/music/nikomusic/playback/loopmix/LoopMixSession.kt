@@ -194,12 +194,12 @@ class LoopMixSession private constructor(
             renderer.setEnvelope(
                 LoopMixRenderer.OUT, LoopMixRenderer.KIND_GAIN,
                 doubleArrayOf(-h, 0.0, clock.enterEnd, clock.rampEnd, clock.releaseAt),
-                floatArrayOf(0f, 1f, 1f, 0.6f, 0f),
+                floatArrayOf(0f, 1f, 0.82f, 0.50f, 0f),
             )
             renderer.setEnvelope(
                 LoopMixRenderer.IN, LoopMixRenderer.KIND_GAIN,
-                doubleArrayOf(0.0, clock.enterEnd, clock.rampEnd),
-                floatArrayOf(0f, 0.55f, 1f),
+                doubleArrayOf(0.0, clock.enterEnd, clock.rampEnd, clock.releaseAt),
+                floatArrayOf(0f, 0.50f, 0.86f, 1f),
             )
             // Bass: the incoming loop comes in without it; they swap over one bar mid-ramp.
             val swapFrom = clock.handoffAt - clock.swapBar / 2

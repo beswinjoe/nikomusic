@@ -46,6 +46,9 @@ sealed interface AppRoute {
     /** Find Your Mood's Show all: every mood and activity, as a grid. */
     data object Moods : AppRoute
 
+    /** AI-powered Daily Discovery showcase and feedback page. */
+    data object DailyDiscovery : AppRoute
+
     /** One category of Settings, opened from its row on the main Settings page. */
     data class SettingsSection(val category: SettingsCategory) : AppRoute
 

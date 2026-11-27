@@ -112,6 +112,28 @@ object LyricsRepository {
         // YouTube's is not the name anyone catalogued. Cleaned once, here,
         // rather than by whichever source thought to do it for itself.
         val (searchTitle, searchArtist) = cleanLyricsSearchTerms(title, artist)
+        val durationBucket = if (durationMs <= 0L) 0L else (durationMs + 2_500L) / 5_000L
+        val cacheKey = LookupCacheKey(
+            videoId = videoId,
+            title = searchTitle,
+            artist = searchArtist,
+            durationBucket = durationBucket,
+            album = album.orEmpty(),
+            sequence = sequence,
+            prioritizeSyllableSync = prioritizeSyllableSync,
+            isrc = isrc.orEmpty(),
+        )
+        val nowMs = System.currentTimeMillis()
+        val cachedHit = synchronized(resultCache) {
+            resultCache[cacheKey]?.takeIf { entry ->
+                val ttl = if (entry.winner != null) CACHE_HIT_TTL_MS else CACHE_MISS_TTL_MS
+                nowMs - entry.storedAtMs < ttl
+            }
+        }
+        cachedHit?.let { cached ->
+            cached.perSource.forEach { (source, result) -> onSourceResult?.invoke(source, result) }
+            return@coroutineScope cached.winner
+        }
 
         // Settled before anyone is asked for words, so every source that can
         // name the recording does. What the caller knows beats what we worked
@@ -124,6 +146,7 @@ object LyricsRepository {
         }
         val recording = known ?: hit?.isrc?.takeIf { it.isNotBlank() }
         val documents = SharedDocuments(this)
+        val recordedSources = ConcurrentHashMap<LyricsSource, Result?>()
 
         // Genius is a plain text web scraper. To preserve bandwidth and avoid rate-limiting,
         // it starts lazily and is only contacted if all higher-priority synced sources miss.
@@ -143,6 +166,7 @@ object LyricsRepository {
                         hit,
                         documents::get,
                     )?.let { result(source, it) }
+                    if (found != null) recordedSources[source] = found
                     onSourceResult?.invoke(source, found)
                     found
                 } catch (cancelled: CancellationException) {
@@ -156,7 +180,14 @@ object LyricsRepository {
         }
 
         try {
-            pick(racing.map { (source, job) -> source to suspend { job.await() } }, prioritizeSyllableSync)
+            val winner = pick(racing.map { (source, job) -> source to suspend { job.await() } }, prioritizeSyllableSync)
+            val entry = CachedLookup(
+                storedAtMs = System.currentTimeMillis(),
+                winner = winner,
+                perSource = recordedSources.toMap(),
+            )
+            synchronized(resultCache) { resultCache[cacheKey] = entry }
+            winner
         } finally {
             // Whoever lost the race is no longer worth waiting on, and
             // coroutineScope will not return while they are still running.
@@ -184,8 +215,11 @@ object LyricsRepository {
             if ((lineSynced ?: plain) != null && source == LyricsSource.GENIUS) continue
 
             val found = runCatching { await() }.getOrNull() ?: continue
+            val isTimed = found.lines.any {
+                it.isWordSynced || it.timeMs > 0L || (it.sungUntilMs != null && it.sungUntilMs > it.timeMs)
+            }
             if (found.lines.any { it.isWordSynced }) return found
-            if (found.lines.any { it.timeMs > 0 }) {
+            if (isTimed) {
                 if (!prioritizeSyllableSync) return found
                 if (lineSynced == null) lineSynced = found
             } else if (plain == null) {
@@ -282,6 +316,32 @@ object LyricsRepository {
 
     /** How many recordings to keep in hand; see [isrcs]. */
     private const val REMEMBERED = 100
+    private const val CACHE_SIZE = 80
+    private const val CACHE_HIT_TTL_MS = 10 * 60_000L
+    private const val CACHE_MISS_TTL_MS = 20_000L
+
+    private data class LookupCacheKey(
+        val videoId: String,
+        val title: String,
+        val artist: String,
+        val durationBucket: Long,
+        val album: String,
+        val sequence: List<LyricsSource>,
+        val prioritizeSyllableSync: Boolean,
+        val isrc: String,
+    )
+
+    private data class CachedLookup(
+        val storedAtMs: Long,
+        val winner: Result?,
+        val perSource: Map<LyricsSource, Result?>,
+    )
+
+    private val resultCache: MutableMap<LookupCacheKey, CachedLookup> = Collections.synchronizedMap(
+        object : LinkedHashMap<LookupCacheKey, CachedLookup>(CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<LookupCacheKey, CachedLookup>) = size > CACHE_SIZE
+        },
+    )
 
     /**
      * The recording behind a video id, once something has worked it out.

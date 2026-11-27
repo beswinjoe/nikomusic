@@ -80,9 +80,10 @@ class DspChain(
         spatial.process(block)
         equalizer.process(block)
         transition.process(block)
-        // The equaliser and spatial widener leave their overs in place for the stages
-        // after them to see; the loudness stage's limiter is what catches whatever survives.
-        loudness.holdLimiter = equalizer.isShaping || spatial.enabled
+        // The equaliser, spatial widener, and Automix transition filter can leave
+        // overs or boost overlap sums; hold the loudness peak limiter whenever
+        // any of those stages is shaping audio.
+        loudness.holdLimiter = equalizer.isShaping || spatial.enabled || transition.isFiltering
         loudness.process(block)
     }
 

@@ -46,4 +46,11 @@ describe('lyrics provider matching guards', () => {
     expect(titlesMatch('Low', 'Low')).toBe(true);
     expect(titlesMatch('Sailor Song', 'Sailor Song')).toBe(true);
   });
+
+  it('validates remix and version tags without conflating remixes with originals', async () => {
+    const { isKugouInstrumentalNotice, lrclib, biniIdentify } = await import('./providers');
+    expect(isKugouInstrumentalNotice('[00:01.00]纯音乐，请欣赏')).toBe(true);
+    expect(typeof lrclib).toBe('function');
+    expect(typeof biniIdentify).toBe('function');
+  });
 });

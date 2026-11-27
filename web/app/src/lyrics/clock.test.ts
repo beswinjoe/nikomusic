@@ -136,4 +136,25 @@ describe('LyricClock', () => {
     }
     expect(Math.abs(shown - (60_000 + (now - FRAME_MS - seekAt)))).toBeLessThan(100);
   });
+
+  it('holds position steady while paused and resumes cleanly without jumping backward', () => {
+    const clock = new LyricClock(10_000);
+    let now = 0;
+    let shown = 0;
+    while (now < 2000) {
+      shown = clock.frame(now, 10_000 + now, now, 0);
+      now += FRAME_MS;
+    }
+    const pausedAt = Math.trunc(shown);
+    clock.hold(pausedAt, now);
+    now += 4000;
+    clock.restart();
+    const afterResume = clock.frame(now, pausedAt, now, 0);
+    expect(afterResume).toBeGreaterThanOrEqual(pausedAt);
+    expect(Math.abs(afterResume - pausedAt)).toBeLessThan(50);
+
+    // Backward seek announced via discontinuity jumps cleanly back without locking.
+    const sought = clock.frame(now + FRAME_MS, 2_000, now + FRAME_MS, 1);
+    expect(Math.abs(sought - 2_000)).toBeLessThan(50);
+  });
 });

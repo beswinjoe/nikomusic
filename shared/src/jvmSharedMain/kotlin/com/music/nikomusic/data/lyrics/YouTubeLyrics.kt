@@ -16,8 +16,17 @@ object YouTubeMusicLyrics {
         if (!YOUTUBE_ID.matches(videoId)) return@withContext null
         val next = runCatching { Innertube.next(videoId) }.getOrNull() ?: return@withContext null
         val endpoint = next.objectsNamed("tabRenderer")
-            .firstOrNull { it.youtubeStrings().any { text -> text.equals("Lyrics", ignoreCase = true) } }
+            .firstOrNull { tab ->
+                tab.objectsNamed("browseEndpoint").any { ep ->
+                    val cfg = (ep["browseEndpointContextSupportedConfigs"] as? JsonObject)
+                        ?.get("browseEndpointContextMusicConfig") as? JsonObject
+                    (cfg?.get("pageType") as? JsonPrimitive)?.contentOrNull == "MUSIC_PAGE_TYPE_TRACK_LYRICS"
+                }
+            }
             ?.objectsNamed("browseEndpoint")?.firstOrNull()
+            ?: next.objectsNamed("tabRenderer")
+                .firstOrNull { it.youtubeStrings().any { text -> text.equals("Lyrics", ignoreCase = true) } }
+                ?.objectsNamed("browseEndpoint")?.firstOrNull()
             ?: next.objectsNamed("tabRenderer").drop(1).firstNotNullOfOrNull {
                 it.objectsNamed("browseEndpoint").firstOrNull()
             }
@@ -50,7 +59,7 @@ internal fun timedLyrics(page: JsonObject): List<LyricLine>? {
         val end = (cue?.get("endTimeMilliseconds") as? JsonPrimitive)
             ?.contentOrNull?.toLongOrNull()
         LyricLine(start, text, sungUntilMs = end)
-    }.sortedBy { it.timeMs }.takeIf { it.isNotEmpty() }
+    }.sortedBy { it.timeMs }.withInstrumentalGaps().takeIf { it.isNotEmpty() }
 }
 
 /** The untimed description shelf the web client gets; the old behaviour. */
@@ -82,7 +91,7 @@ object YouTubeTranscriptLyrics {
             val text = cue["cue"]?.youtubeStrings()?.joinToString("").orEmpty()
                 .trim(' ', '\n', '♪')
             text.takeIf { it.isNotEmpty() }?.let { LyricLine(start, it) }
-        }.sortedBy { it.timeMs }.toList().takeIf { it.isNotEmpty() }
+        }.sortedBy { it.timeMs }.toList().withInstrumentalGaps().takeIf { it.isNotEmpty() }
     }
 }
 

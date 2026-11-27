@@ -47,12 +47,12 @@ export function ttmlTime(value: string | null | undefined): number | null {
   if (!raw) return null;
   if (raw.endsWith('ms')) {
     const ms = Number(raw.slice(0, -2));
-    return Number.isFinite(ms) ? Math.trunc(ms) : null;
+    return Number.isFinite(ms) ? Math.round(ms) : null;
   }
   const parts = raw.replace(/s$/, '').split(':').map(Number);
   if (parts.some((p) => !Number.isFinite(p)) || parts.length > 3) return null;
   const seconds = parts.reduce((total, part) => total * 60 + part, 0);
-  return Math.trunc(seconds * 1000);
+  return Math.round(seconds * 1000);
 }
 
 /** An attribute named with a prefix, whichever way the DOM files it. */
@@ -183,9 +183,18 @@ const A2_LINE = /^\[(\d{1,3}):(\d{2})[.:](\d{2,3})\](.*)$/;
 const A2_WORD = /<(\d{1,3}):(\d{2})[.:](\d{2,3})>([^<]*)/g;
 const TAIL_MS = 800;
 
-function stamp(minutes: string, seconds: string, fraction: string): number {
-  const fractionMs = fraction.length === 3 ? Number(fraction) : Number(fraction) * 10;
-  return Number(minutes) * 60_000 + Number(seconds) * 1000 + fractionMs;
+function lrcStampMs(hours: string | undefined, minutes: string, seconds: string, fraction: string | undefined): number {
+  const h = hours ? Number(hours) : 0;
+  const m = Number(minutes);
+  const s = Number(seconds);
+  const f = fraction ?? '';
+  const fractionMs =
+    f.length === 0 ? 0 : f.length === 1 ? Number(f) * 100 : f.length === 2 ? Number(f) * 10 : Number(f);
+  return h * 3_600_000 + m * 60_000 + s * 1000 + fractionMs;
+}
+
+function stamp(minutes: string, seconds: string, fraction = ''): number {
+  return lrcStampMs(undefined, minutes, seconds, fraction);
 }
 
 /** Empty when the LRC carries no word stamps, so the caller can fall back to plain LRC. */
@@ -223,12 +232,19 @@ export function parseEnhancedLrc(lrc: string): LyricLine[] {
 
 // ---- Plain LRC (LrcLib.parseLrc) --------------------------------------------------------------
 
-const LRC_STAMP = /\[(\d{1,2}):(\d{2})[.:](\d{2,3})\]/;
-const WORD_STAMP = /<(\d{1,3}):(\d{2})[.:](\d{2,3})>/g;
+const LRC_STAMP = /\[(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/;
+const WORD_STAMP = /<(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>/g;
 const ALIGNMENT_MARKER = '<R>';
 
 export function parseLrc(lrc: string): LyricLine[] {
-  const all: LyricLine[] = [];
+  const staged: {
+    timeMs: number;
+    text: string;
+    body: string;
+    alignment: LyricLine['alignment'];
+    marks: RegExpMatchArray[];
+  }[] = [];
+
   for (const raw of lrc.split(/\r?\n/)) {
     const match = LRC_STAMP.exec(raw);
     if (!match) continue;
@@ -246,26 +262,41 @@ export function parseLrc(lrc: string): LyricLine[] {
       alignment = 'end';
     }
     const marks = [...body.matchAll(WORD_STAMP)];
-    const runs: TimedRun[] = marks.map((mark, i) => {
-      const until = marks[i + 1]?.index ?? body.length;
-      const startMs = stamp(mark[1]!, mark[2]!, mark[3]!);
-      const next = marks[i + 1];
-      return {
-        startMs,
-        endMs: next ? stamp(next[1]!, next[2]!, next[3]!) : startMs,
-        raw: body.slice((mark.index ?? 0) + mark[0].length, until),
-      };
-    });
+    const plainText = body.replace(WORD_STAMP, '').trim();
     for (const at of stamps) {
-      all.push(
-        line(stamp(at[1]!, at[2]!, at[3]!), body.replace(WORD_STAMP, '').trim(), {
-          words: marks.length ? wordsFromRuns(runs) : [],
-          alignment,
-        }),
-      );
+      staged.push({
+        timeMs: lrcStampMs(at[1], at[2]!, at[3]!, at[4]),
+        text: plainText,
+        body,
+        alignment,
+        marks,
+      });
     }
   }
-  all.sort((a, b) => a.timeMs - b.timeMs);
+  staged.sort((a, b) => a.timeMs - b.timeMs);
+
+  const all: LyricLine[] = staged.map((entry, idx) => {
+    const nextTimeMs = staged[idx + 1]?.timeMs;
+    const runs: TimedRun[] = entry.marks.map((mark, i) => {
+      const until = entry.marks[i + 1]?.index ?? entry.body.length;
+      const startMs = lrcStampMs(mark[1], mark[2]!, mark[3]!, mark[4]);
+      const next = entry.marks[i + 1];
+      const rawText = entry.body.slice((mark.index ?? 0) + mark[0].length, until);
+      const endMs = next
+        ? lrcStampMs(next[1], next[2]!, next[3]!, next[4])
+        : rawText.trim()
+          ? nextTimeMs !== undefined && nextTimeMs > startMs
+            ? Math.min(nextTimeMs, startMs + 3000)
+            : startMs + TAIL_MS
+          : startMs;
+      return { startMs, endMs, raw: rawText };
+    });
+    return line(entry.timeMs, entry.text, {
+      words: entry.marks.length ? wordsFromRuns(runs) : [],
+      alignment: entry.alignment,
+    });
+  });
+
   const kept = all.filter((l, index) => {
     if (l.text) return true;
     const next = all[index + 1];

@@ -77,7 +77,17 @@ object BiniLyrics {
         val response = runCatching { lyricsJson.decodeFromString<Response>(body) }.getOrNull()
             ?: return@withContext null
         val results = response.results.orEmpty()
-        if (!isrc.isNullOrBlank()) results.firstOrNull() else best(results, title, artist, durationMs)
+        if (!isrc.isNullOrBlank()) {
+            best(results, title, artist, durationMs)?.let { return@withContext it }
+            // Even on an ISRC lookup, refuse explicit version mismatches (e.g. live/remix swapped for studio).
+            return@withContext results.firstOrNull { hit ->
+                val name = hit.trackName ?: return@firstOrNull true
+                isLyricsVersionCompatible(title, name) &&
+                    (durationMs <= 0L || hit.duration == null || hit.duration <= 0 ||
+                        kotlin.math.abs(hit.duration - durationMs / 1000) <= 25)
+            }
+        }
+        best(results, title, artist, durationMs)
     }
 
     /**

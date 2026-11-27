@@ -117,7 +117,11 @@ internal fun lyricsArtistMatches(candidateArtist: String, targetArtist: String):
     val normCand = PUNCT_REGEX.replace(candClean, " ").replace(WHITESPACE, " ").trim()
     val normTarget = PUNCT_REGEX.replace(targetClean, " ").replace(WHITESPACE, " ").trim()
     if (normCand == normTarget) return true
-    if (normCand.contains(normTarget) || normTarget.contains(normCand)) return true
+    if ((normTarget.length >= 4 && normCand.contains(normTarget)) ||
+        (normCand.length >= 4 && normTarget.contains(normCand))
+    ) {
+        return true
+    }
     val candParts = candClean.split(MULTI_ARTIST_SPLIT).map {
         PUNCT_REGEX.replace(it, " ").replace(WHITESPACE, " ").trim()
     }.filter { it.isNotEmpty() }
@@ -125,6 +129,16 @@ internal fun lyricsArtistMatches(candidateArtist: String, targetArtist: String):
         PUNCT_REGEX.replace(it, " ").replace(WHITESPACE, " ").trim()
     }.filter { it.isNotEmpty() }
     return candParts.any { cp -> targetParts.any { tp -> cp == tp || (cp.length >= 4 && tp.contains(cp)) || (tp.length >= 4 && cp.contains(tp)) } }
+}
+
+/** Extracts the primary billed artist for fallback lookups on multi-artist credits. */
+internal fun leadLyricsArtist(raw: String): String {
+    val clean = raw.artistForLyricsSearch().trim()
+    if (clean.isEmpty()) return ""
+    return clean.split(MULTI_ARTIST_SPLIT)
+        .map { it.trim() }
+        .firstOrNull { it.isNotEmpty() }
+        ?: clean
 }
 
 /** Rejects remix/live/cover/sped-up/slowed variants when the listener is playing the studio version (and vice versa). */

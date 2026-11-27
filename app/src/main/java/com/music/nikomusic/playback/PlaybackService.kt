@@ -2350,6 +2350,7 @@ class PlaybackService : MediaLibraryService() {
                 existing = listOf(radioSeed),
                 seedSong = radioSeed,
                 limit = INITIAL_STATION_TRACKS,
+                analysisLookup = { id -> trackAnalyzer.analysisFor(id) },
             ).getOrElse {
                 TrackLog.w(
                     "NikoMusic",
@@ -3366,7 +3367,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun toggleShuffleFromSession() {
-        crossfade?.cancelAutoMixVisual()
+        crossfade?.onQueueEdited()
         val window = boundedContextWindow
         if (window != null && !ListenTogether.state.value.inParty) {
             val target = !(boundedEditState.desiredShuffle ?: window.isShuffleEnabled)
@@ -3452,7 +3453,7 @@ class PlaybackService : MediaLibraryService() {
         val request = BoundedContextRequests.take(requestToken) ?: return
         val result = prepareBoundedContext(request) ?: return
         val exoPlayer = player ?: return
-        crossfade?.cancelAutoMixVisual()
+        crossfade?.onQueueEdited()
         exoPlayer.setMediaItems(result.mediaItems, result.startIndex, result.startPositionMs)
         saveBoundedContextSnapshot(exoPlayer)
         exoPlayer.prepare()
@@ -3858,7 +3859,12 @@ class PlaybackService : MediaLibraryService() {
                     val at = activePlayer.currentMediaItemIndex - seedBack
                     if (at >= 0) activePlayer.getMediaItemAt(at).toSong() else current
                 }
-                val result = loadAutoplayTracks(existing, seedSong, remaining)
+                val result = loadAutoplayTracks(
+                    existing = existing,
+                    seedSong = seedSong,
+                    limit = remaining,
+                    analysisLookup = { id -> trackAnalyzer.analysisFor(id) },
+                )
                 val resolved = result.getOrElse {
                     TrackLog.w(
                         "NikoMusic",
@@ -8695,14 +8701,17 @@ class PlaybackService : MediaLibraryService() {
             return
         }
 
-        val trackDurationMs = (player?.duration ?: 0L).takeIf { it > 0 } ?: 0L
+        val trackDurationMs = (player?.duration ?: 0L).takeIf { it > 0 }
+            ?: currentSong.durationMillis().takeIf { it > 0 }
+            ?: 0L
 
         serviceLyricsJob?.cancel()
         serviceLyricsJob = scope.launch(Dispatchers.IO) {
             val localUri = currentSong.localUri
             val embedded = localUri?.let { EmbeddedLyrics.forUri(this@PlaybackService, it) }
-            // The file's plain words don't end the lookup: a source may have
-            // them synced, which is all a lock-screen line can follow.
+            // Only timed lines can follow playback on the lock screen or Now Bar.
+            // Plain text has every line stamped at 0ms, which would freeze on the
+            // last line for the entire song.
             var lines: List<LyricLine>? = embedded?.takeIf(EmbeddedLyrics::isSynced)
             if (lines == null) {
                 val found = LyricsRepository.lyrics(
@@ -8715,7 +8724,7 @@ class PlaybackService : MediaLibraryService() {
                     order = AppSettings.lyricsSourceOrder.value,
                     prioritizeSyllableSync = AppSettings.prioritizeSyllableSync.value,
                 )
-                lines = found?.lines?.takeIf(EmbeddedLyrics::isSynced) ?: embedded ?: found?.lines
+                lines = found?.lines?.takeIf(EmbeddedLyrics::isSynced)
             }
             withContext(Dispatchers.Main) {
                 serviceLyrics = lines
@@ -8746,8 +8755,11 @@ class PlaybackService : MediaLibraryService() {
         val exoPlayer = player ?: return
         val currentSong = exoPlayer.currentMediaItem?.toSong() ?: return
         val lines = serviceLyrics
-        val pos = crossfade?.loopPositionMs() ?: exoPlayer.currentPosition
-        val subtitleText = if (lines != null && lines.isNotEmpty() && AppSettings.syncedLyrics.value) {
+        val rawPos = crossfade?.loopPositionMs() ?: exoPlayer.currentPosition
+        val pos = (rawPos - AppSettings.lyricsOffsetMs.value.toLong()).coerceAtLeast(0L)
+        val subtitleText = if (lines != null && lines.isNotEmpty() &&
+            EmbeddedLyrics.isSynced(lines) && AppSettings.syncedLyrics.value
+        ) {
             val idx = lines.indexOfLast { it.timeMs <= pos }
             val currentLine = lines.getOrNull(idx)
             if (currentLine != null && !currentLine.isGap && currentLine.text.isNotBlank()) {
@@ -9210,7 +9222,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         private fun onAutoMixInterruptingIntent() {
-            crossfade.cancelAutoMixVisual()
+            crossfade.onQueueEdited()
             onUserIntent()
         }
 

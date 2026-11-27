@@ -220,4 +220,107 @@ class RecommendationEngineTest {
         assertFalse(discover.items.any { it.videoId == "vA" || it.browseId == "MPRE1" })
         assertEquals(3, discover.items.size)
     }
+
+    @Test
+    fun discoveryModeExcludesHiddenFeedbackAndRepeatedSkips() {
+        val candidates = listOf(
+            RecommendationEngine.TrackCandidate(
+                song = Song("hidden-1", "Hidden Track", "New Artist A", null),
+                genres = listOf("synthpop"),
+            ),
+            RecommendationEngine.TrackCandidate(
+                song = Song("skip-heavy", "Skipped Track", "Artist B", null),
+                genres = listOf("synthpop"),
+            ),
+            RecommendationEngine.TrackCandidate(
+                song = Song("less-artist", "Turned Down", "Blocked Artist", null),
+                genres = listOf("synthpop"),
+            ),
+            RecommendationEngine.TrackCandidate(
+                song = Song("good-pick", "Fresh Gem", "Inspired Artist", null),
+                genres = listOf("synthpop"),
+                aiCurated = true,
+            ),
+        )
+        val profile = RecommendationEngine.ListenerProfile(
+            favoriteGenres = mapOf("synthpop" to 1.0),
+            hiddenTrackIds = setOf("hidden-1"),
+            lessLikeArtists = setOf("blocked artist"),
+            moreLikeArtists = setOf("inspired artist"),
+            tracks = mapOf(
+                "skip-heavy" to RecommendationEngine.TrackFeedback(
+                    videoId = "skip-heavy",
+                    skips = 3,
+                    earlySkips = 3,
+                ),
+            ),
+        )
+        val ranked = RecommendationEngine.rankTracks(
+            candidates = candidates,
+            profile = profile,
+            mode = RecommendationEngine.RankingMode.DISCOVERY,
+            limit = 10,
+            seed = 42L,
+        )
+        assertFalse(ranked.any { it.videoId == "hidden-1" })
+        assertFalse(ranked.any { it.videoId == "skip-heavy" })
+        assertEquals("good-pick", ranked.firstOrNull()?.videoId)
+    }
+
+    @Test
+    fun discoveryModeBalancesUnfamiliarArtistsAndGenreDiversity() {
+        val candidates = listOf(
+            RecommendationEngine.TrackCandidate(Song("fam-1", "Known 1", "Favorite Artist", null), genres = listOf("indie rock")),
+            RecommendationEngine.TrackCandidate(Song("fam-2", "Known 2", "Favorite Artist", null), genres = listOf("indie rock")),
+            RecommendationEngine.TrackCandidate(Song("fam-3", "Known 3", "Favorite Artist", null), genres = listOf("indie rock")),
+            RecommendationEngine.TrackCandidate(Song("new-1", "Indie Echo", "Fresh Band 1", null), genres = listOf("indie rock"), aiCurated = true),
+            RecommendationEngine.TrackCandidate(Song("new-2", "Dream Drift", "Fresh Band 2", null), genres = listOf("dream pop"), aiCurated = true),
+            RecommendationEngine.TrackCandidate(Song("new-3", "Velvet Night", "Fresh Band 3", null), genres = listOf("neo soul")),
+            RecommendationEngine.TrackCandidate(Song("new-4", "Solar Pulse", "Fresh Band 4", null), genres = listOf("electronic")),
+        )
+        val profile = RecommendationEngine.ListenerProfile(
+            artists = listOf(RecommendationEngine.ArtistAffinity(name = "Favorite Artist", plays = 40)),
+            favoriteGenres = mapOf("indie rock" to 1.0, "dream pop" to 0.7),
+        )
+        val ranked = RecommendationEngine.rankTracks(
+            candidates = candidates,
+            profile = profile,
+            mode = RecommendationEngine.RankingMode.DISCOVERY,
+            limit = 6,
+            seed = 7L,
+        )
+        val favCount = ranked.count { it.artist == "Favorite Artist" }
+        val unfamiliarCount = ranked.count { it.artist != "Favorite Artist" }
+        assertTrue(favCount <= 2, "Artist diversity should cap Favorite Artist at <=2, got $favCount")
+        assertTrue(unfamiliarCount >= 4, "Discovery mode should prioritize unfamiliar artists, got $unfamiliarCount")
+    }
+
+    @Test
+    fun discoveryModeRewardsMatchedBpmAndEnergySweetSpot() {
+        val near = RecommendationEngine.TrackCandidate(
+            song = Song("bpm-near", "Groove Match", "Artist X", null),
+            bpm = 118.0,
+            energy = 0.72,
+            genres = listOf("funk"),
+        )
+        val far = RecommendationEngine.TrackCandidate(
+            song = Song("bpm-far", "Too Slow", "Artist Y", null),
+            bpm = 64.0,
+            energy = 0.15,
+            genres = listOf("funk"),
+        )
+        val profile = RecommendationEngine.ListenerProfile(
+            favoriteGenres = mapOf("funk" to 0.9),
+            preferredBpm = 120.0,
+            preferredEnergy = 0.70,
+        )
+        val ranked = RecommendationEngine.rankTracks(
+            candidates = listOf(far, near),
+            profile = profile,
+            mode = RecommendationEngine.RankingMode.DISCOVERY,
+            limit = 2,
+            seed = 9L,
+        )
+        assertEquals(listOf("bpm-near", "bpm-far"), ranked.map { it.videoId })
+    }
 }

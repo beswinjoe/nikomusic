@@ -96,7 +96,8 @@ object EmbeddedLyrics {
      * lookup; plain ones are a fallback a network source may still beat with
      * synced lines, as every MP3 got before its `USLT` was read.
      */
-    fun isSynced(lines: List<LyricLine>): Boolean = lines.any { it.timeMs > 0L }
+    fun isSynced(lines: List<LyricLine>): Boolean =
+        lines.any { it.isWordSynced || it.timeMs > 0L || (it.sungUntilMs?.let { until -> until > it.timeMs } == true) }
 
     /** The raw LRC text for the file, preferring this app's word-timed field. */
     private fun read(context: Context, uri: Uri): String? =

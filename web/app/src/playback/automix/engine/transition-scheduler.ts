@@ -336,7 +336,8 @@ export function planMixWindowTiming(params: {
 
   const confBars = effectiveBlendBars(requestedBars, fromAnalysis.gridConfidence, toAnalysis!.gridConfidence);
   const calmCap = requestedBars >= 16 ? MAX_BLEND_CALM_SEC : MAX_BLEND_STANDARD_SEC;
-  let bars = pickMusicalBars(confBars, barOutSec, calmCap, 2);
+  const maxForDuration = fromAnalysis.durationSec < 45 ? Math.max(3, (fromAnalysis.durationSec - 0.5) * 0.35) : calmCap;
+  let bars = pickMusicalBars(confBars, barOutSec, Math.min(calmCap, maxForDuration), fromAnalysis.durationSec < 45 ? 1 : 2);
   let durationSec = bars * barOutSec;
   let blendInputSec = durationSec * outRate;
   let mixOutTrackTime = chooseSuitableMixOut(fromAnalysis, fromGrid, contentEnd, blendInputSec, outRate);
@@ -350,11 +351,20 @@ export function planMixWindowTiming(params: {
   }
   if (mixInTrackTime < toGrid!.downbeatSec) mixInTrackTime = toGrid!.downbeatSec;
 
-  // Shrink slightly if vocals on both tracks compete during the overlap.
-  const clash = simultaneousVocalOverlap(fromAnalysis, toAnalysis!, mixOutTrackTime, mixInTrackTime, durationSec, rate);
+  // Shrink slightly if vocals on both tracks compete during the overlap, and retry
+  // a compact single-bar transition if heavy vocal overlap still persists.
+  let clash = simultaneousVocalOverlap(fromAnalysis, toAnalysis!, mixOutTrackTime, mixInTrackTime, durationSec, rate);
   if (clash >= VOCAL_CLASH_THRESHOLD && durationSec > MAX_BLEND_SHORT_SEC) {
     bars = pickMusicalBars(confBars, barOutSec, MAX_BLEND_SHORT_SEC, 2);
     durationSec = bars * barOutSec;
+    blendInputSec = durationSec * outRate;
+    mixOutTrackTime = chooseSuitableMixOut(fromAnalysis, fromGrid, contentEnd, blendInputSec, outRate);
+    mixInTrackTime = Math.min(maxIncomingCue, Math.max(toGrid!.downbeatSec, fullEnergyPhrase - durationSec * rate));
+    clash = simultaneousVocalOverlap(fromAnalysis, toAnalysis!, mixOutTrackTime, mixInTrackTime, durationSec, rate);
+  }
+  if (clash >= VOCAL_CLASH_THRESHOLD && durationSec > Math.max(4, barOutSec)) {
+    const minimalSec = Math.min(durationSec, Math.max(4, barOutSec));
+    durationSec = minimalSec;
     blendInputSec = durationSec * outRate;
     mixOutTrackTime = chooseSuitableMixOut(fromAnalysis, fromGrid, contentEnd, blendInputSec, outRate);
     mixInTrackTime = Math.min(maxIncomingCue, Math.max(toGrid!.downbeatSec, fullEnergyPhrase - durationSec * rate));

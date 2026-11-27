@@ -226,6 +226,10 @@ fun SettingsScreen(
     onOpenSection: (SettingsCategory) -> Unit = {},
     /** Opens a choice with more options than its row can show, as a page. */
     onOpenChoice: (SettingsChoiceKind) -> Unit = {},
+    /** Clears AI Daily Discovery cache and feedback history from Your Data. */
+    onClearAiDiscovery: () -> Unit = {},
+    /** Triggers fresh Daily Discovery curation when AI personalization is opted in. */
+    onToggleAiDiscovery: (Boolean) -> Unit = AppSettings::setAiDiscoveryOptIn,
 ) {
     val context = LocalContext.current
 
@@ -304,6 +308,8 @@ fun SettingsScreen(
     val hideHomeVideos by AppSettings.hideHomeVideos.collectAsStateWithLifecycle()
     val hideTopPicks by AppSettings.hideTopPicks.collectAsStateWithLifecycle()
     val hideHomeMoods by AppSettings.hideHomeMoods.collectAsStateWithLifecycle()
+    val aiDiscoveryOptIn by AppSettings.aiDiscoveryOptIn.collectAsStateWithLifecycle()
+    val showDailyDiscoveryHome by AppSettings.showDailyDiscoveryHome.collectAsStateWithLifecycle()
     val smartVersionAlignment by AppSettings.smartVersionAlignment.collectAsStateWithLifecycle()
     val filterNonMusicAudio by AppSettings.filterNonMusicAudio.collectAsStateWithLifecycle()
     val localMusicFolderUri by AppSettings.localMusicFolderUri.collectAsStateWithLifecycle()
@@ -1090,6 +1096,21 @@ fun SettingsScreen(
                     onClick = { AppSettings.setHideHomeMoods(!hideHomeMoods) },
                 )
             }
+            val hideDailyDiscoveryTitle = stringResource(R.string.daily_discovery_show_on_home)
+            row(hideDailyDiscoveryTitle, "daily discovery", "ai", "recommendations", "feed", "home") {
+                SettingsRow(
+                    icon = SfIcons.AutoAwesome,
+                    title = hideDailyDiscoveryTitle,
+                    subtitle = stringResource(R.string.daily_discovery_show_on_home_subtitle),
+                    trailing = {
+                        IosSwitch(
+                            checked = !showDailyDiscoveryHome,
+                            onCheckedChange = { hidden -> AppSettings.setShowDailyDiscoveryHome(!hidden) },
+                        )
+                    },
+                    onClick = { AppSettings.setShowDailyDiscoveryHome(!showDailyDiscoveryHome) },
+                )
+            }
             val squareVideoThumbnailsTitle = stringResource(R.string.square_video_thumbnails)
             row(squareVideoThumbnailsTitle, "video", "thumbnail", "cover", "artwork", "player") {
                 SettingsRow(
@@ -1644,6 +1665,30 @@ fun SettingsScreen(
                         )
                     },
                     onClick = { AppSettings.setReplayGenres(!replayGenres) },
+                )
+            }
+            val aiDiscoveryTitle = stringResource(R.string.daily_discovery_ai_personalization)
+            row(aiDiscoveryTitle, "ai", "daily discovery", "privacy", "personalization") {
+                SettingsRow(
+                    icon = SfIcons.AutoAwesome,
+                    title = aiDiscoveryTitle,
+                    subtitle = stringResource(R.string.daily_discovery_ai_personalization_subtitle),
+                    trailing = {
+                        IosSwitch(
+                            checked = aiDiscoveryOptIn,
+                            onCheckedChange = onToggleAiDiscovery,
+                        )
+                    },
+                    onClick = { onToggleAiDiscovery(!aiDiscoveryOptIn) },
+                )
+            }
+            val clearAiDiscoveryTitle = stringResource(R.string.daily_discovery_clear_data)
+            row(clearAiDiscoveryTitle, "ai", "daily discovery", "clear", "cache", "privacy", "feedback") {
+                SettingsRow(
+                    icon = SfIcons.DeleteSweep,
+                    title = clearAiDiscoveryTitle,
+                    subtitle = stringResource(R.string.daily_discovery_clear_data_subtitle),
+                    onClick = onClearAiDiscovery,
                 )
             }
             val exportDataTitle = stringResource(R.string.export_data)

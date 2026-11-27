@@ -103,8 +103,12 @@ func TestOpenAIRecommendRoundTrip(t *testing.T) {
 		OpenAIBaseURL: srv.URL,
 	})
 	resp, err := rec.Recommend(context.Background(), RecommendRequest{
-		Mode:                 "new-release",
+		Mode:                 "daily-discovery",
 		LikedArtists:         []string{"John Michael Howell"},
+		PreferredGenres:      []string{"indie pop", "soul"},
+		PreferredMoods:       []string{"Late Night", "Focus"},
+		ListeningPattern:     "Evening listener",
+		ExplorationRatio:     0.7,
 		PriorPersona:         "Melodic pop-soul",
 		LikedRecommendations: []TrackHint{{Title: "The Wind", Artist: "John Michael Howell"}},
 	})
@@ -113,5 +117,21 @@ func TestOpenAIRecommendRoundTrip(t *testing.T) {
 	}
 	if !resp.Enabled || resp.Provider != "openai" || resp.Queries[0] != "Lauv - I Like Me Better" || resp.TasteSummary == "" {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestBuildPromptIncludesGenresMoodsAndPattern(t *testing.T) {
+	prompt := BuildPrompt(sanitizeRequest(RecommendRequest{
+		Mode:             "daily-discovery",
+		LikedArtists:     []string{"NIKI", "Keshi"},
+		PreferredGenres:  []string{"indie r&b", "bedroom pop"},
+		PreferredMoods:   []string{"Late Night", "Chill"},
+		ListeningPattern: "Night owl",
+		ExplorationRatio: 0.72,
+	}))
+	for _, want := range []string{"indie r&b", "bedroom pop", "Late Night", "Night owl", "72% unfamiliar"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
+		}
 	}
 }

@@ -117,6 +117,159 @@ object QueueBuilder {
         .filter { it.isNotEmpty() }
         .toSet()
 
+    /**
+     * Reorders [tracks] greedily from [anchor] to balance Automix compatibility
+     * (octave-folded BPM stretch reachability, harmonic Camelot key, energy
+     * continuity) with artist and album variety so consecutive transitions sound
+     * cohesive without stagnating on one artist or sound.
+     */
+    fun orderForSmoothMix(
+        anchor: Song?,
+        tracks: List<Song>,
+        analyses: (String) -> com.music.nikomusic.playback.smart.TrackAnalysis?,
+        limit: Int = tracks.size,
+    ): List<Song> {
+        if (tracks.size <= 1 || limit <= 0) return tracks.take(limit.coerceAtLeast(0))
+        val pool = tracks.toMutableList()
+        val ordered = ArrayList<Song>(minOf(limit, tracks.size))
+        var current = anchor
+        val artistCounts = mutableMapOf<String, Int>()
+        val albumCounts = mutableMapOf<String, Int>()
+        var prevLeadArtist = anchor?.let { artistSet(it.artist).minOrNull() }
+        var prevAlbum = anchor?.albumName?.lowercase(Locale.ROOT)?.trim()?.takeIf { it.isNotEmpty() }
+
+        while (ordered.size < limit && pool.isNotEmpty()) {
+            val currentAnalysis = current?.videoId?.let(analyses)?.takeIf {
+                it.status == com.music.nikomusic.playback.smart.TrackAnalysis.STATUS_READY
+            }
+            val currentEnergy = currentAnalysis?.let(::meanEnergy) ?: Double.NaN
+            var bestIndex = 0
+            var bestScore = Double.NEGATIVE_INFINITY
+            for (index in pool.indices) {
+                val candidate = pool[index]
+                val candAnalysis = analyses(candidate.videoId)?.takeIf {
+                    it.status == com.music.nikomusic.playback.smart.TrackAnalysis.STATUS_READY
+                }
+                val leadArtist = artistSet(candidate.artist).minOrNull()
+                val albumKey = candidate.albumName?.lowercase(Locale.ROOT)?.trim()?.takeIf { it.isNotEmpty() }
+
+                var score = 0.0
+                if (currentAnalysis != null && candAnalysis != null) {
+                    val outBpm = currentAnalysis.bpm
+                    val inBpm = candAnalysis.bpm
+                    if (outBpm > 0.0 && inBpm > 0.0) {
+                        val aligned = com.music.nikomusic.playback.smart.alignTempoOctave(outBpm, inBpm)
+                        val rel = kotlin.math.abs(aligned - outBpm) / outBpm
+                        score += when {
+                            rel <= 0.06 -> 2.4 - rel * 10.0
+                            com.music.nikomusic.playback.smart.stretchReachable(outBpm, inBpm) -> 1.3 - (rel - 0.06) * 5.0
+                            else -> -1.4 - rel
+                        }
+                    }
+                    score += harmonicScore(currentAnalysis.key, candAnalysis.key)
+                    val candEnergy = meanEnergy(candAnalysis)
+                    if (!currentEnergy.isNaN() && !candEnergy.isNaN()) {
+                        score += (0.8 - kotlin.math.abs(candEnergy - currentEnergy) * 2.2).coerceAtLeast(-1.0)
+                    }
+                } else if (candAnalysis != null) {
+                    score += 0.15
+                }
+
+                // Preserve mild preference for the station's native ordering.
+                score -= index * 0.03
+
+                if (leadArtist != null) {
+                    if (leadArtist == prevLeadArtist) score -= 2.4
+                    val prior = artistCounts[leadArtist] ?: 0
+                    if (prior > 0) score -= prior * 0.7
+                }
+                if (albumKey != null) {
+                    if (albumKey == prevAlbum) score -= 1.0
+                    val priorAlbum = albumCounts[albumKey] ?: 0
+                    if (priorAlbum > 0) score -= priorAlbum * 0.35
+                }
+
+                if (score > bestScore) {
+                    bestScore = score
+                    bestIndex = index
+                }
+            }
+
+            val chosen = pool.removeAt(bestIndex)
+            ordered += chosen
+            current = chosen
+            prevLeadArtist = artistSet(chosen.artist).minOrNull()
+            prevLeadArtist?.let { artistCounts[it] = (artistCounts[it] ?: 0) + 1 }
+            prevAlbum = chosen.albumName?.lowercase(Locale.ROOT)?.trim()?.takeIf { it.isNotEmpty() }
+            prevAlbum?.let { albumCounts[it] = (albumCounts[it] ?: 0) + 1 }
+        }
+        return ordered
+    }
+
+    private fun meanEnergy(analysis: com.music.nikomusic.playback.smart.TrackAnalysis): Double {
+        if (analysis.energyCurve.isNotEmpty()) {
+            var sum = 0.0
+            var count = 0
+            for (sample in analysis.energyCurve) {
+                if (sample.energy.isFinite()) {
+                    sum += sample.energy
+                    count++
+                }
+            }
+            if (count > 0) return sum / count
+        }
+        val firstWindow = analysis.levelWindows.firstOrNull { it.values.isNotEmpty() } ?: return Double.NaN
+        var sum = 0.0
+        for (value in firstWindow.values) sum += value
+        return sum / firstWindow.values.size
+    }
+
+    private fun harmonicScore(leftKey: String, rightKey: String): Double {
+        val left = parseCamelot(leftKey) ?: return 0.0
+        val right = parseCamelot(rightKey) ?: return 0.0
+        if (left == right) return 1.1
+        val numDiff = kotlin.math.min(
+            kotlin.math.abs(left.first - right.first),
+            12 - kotlin.math.abs(left.first - right.first),
+        )
+        return when {
+            left.first == right.first && left.second != right.second -> 0.85
+            left.second == right.second && numDiff == 1 -> 0.75
+            left.second != right.second && numDiff == 1 -> 0.3
+            numDiff >= 4 -> -0.8
+            else -> -0.2
+        }
+    }
+
+    private fun parseCamelot(raw: String): Pair<Int, Char>? {
+        val norm = raw.trim().lowercase(Locale.ROOT)
+            .replace("♭", "b")
+            .replace("♯", "#")
+            .replace("major", "maj")
+            .replace("minor", "min")
+        if (norm.isEmpty()) return null
+        Regex("""^(\d{1,2})\s*([ab])$""").matchEntire(norm)?.let { match ->
+            val num = match.groupValues[1].toIntOrNull() ?: return null
+            if (num in 1..12) return num to match.groupValues[2][0].uppercaseChar()
+        }
+        return CAMELOT_WHEEL[norm]
+    }
+
+    private val CAMELOT_WHEEL = mapOf(
+        "c maj" to (8 to 'B'), "c" to (8 to 'B'), "a min" to (8 to 'A'), "am" to (8 to 'A'),
+        "g maj" to (9 to 'B'), "g" to (9 to 'B'), "e min" to (9 to 'A'), "em" to (9 to 'A'),
+        "d maj" to (10 to 'B'), "d" to (10 to 'B'), "b min" to (10 to 'A'), "bm" to (10 to 'A'),
+        "a maj" to (11 to 'B'), "a" to (11 to 'B'), "f# min" to (11 to 'A'), "f#m" to (11 to 'A'), "gb min" to (11 to 'A'), "gbm" to (11 to 'A'),
+        "e maj" to (12 to 'B'), "e" to (12 to 'B'), "c# min" to (12 to 'A'), "c#m" to (12 to 'A'), "db min" to (12 to 'A'), "dbm" to (12 to 'A'),
+        "b maj" to (1 to 'B'), "b" to (1 to 'B'), "cb maj" to (1 to 'B'), "g# min" to (1 to 'A'), "g#m" to (1 to 'A'), "ab min" to (1 to 'A'), "abm" to (1 to 'A'),
+        "f# maj" to (2 to 'B'), "f#" to (2 to 'B'), "gb maj" to (2 to 'B'), "gb" to (2 to 'B'), "d# min" to (2 to 'A'), "d#m" to (2 to 'A'), "eb min" to (2 to 'A'), "ebm" to (2 to 'A'),
+        "db maj" to (3 to 'B'), "db" to (3 to 'B'), "c# maj" to (3 to 'B'), "c#" to (3 to 'B'), "bb min" to (3 to 'A'), "bbm" to (3 to 'A'), "a# min" to (3 to 'A'), "a#m" to (3 to 'A'),
+        "ab maj" to (4 to 'B'), "ab" to (4 to 'B'), "g# maj" to (4 to 'B'), "f min" to (4 to 'A'), "fm" to (4 to 'A'),
+        "eb maj" to (5 to 'B'), "eb" to (5 to 'B'), "d# maj" to (5 to 'B'), "c min" to (5 to 'A'), "cm" to (5 to 'A'),
+        "bb maj" to (6 to 'B'), "bb" to (6 to 'B'), "a# maj" to (6 to 'B'), "g min" to (6 to 'A'), "gm" to (6 to 'A'),
+        "f maj" to (7 to 'B'), "f" to (7 to 'B'), "d min" to (7 to 'A'), "dm" to (7 to 'A'),
+    )
+
     private val NOISE = Regex(
         """\((?:official|lyric|lyrics|lyrical|audio|video|visuali[sz]er|full song|hd|4k)[^)]*\)""" +
             """|\(from[^)]*\)""" +

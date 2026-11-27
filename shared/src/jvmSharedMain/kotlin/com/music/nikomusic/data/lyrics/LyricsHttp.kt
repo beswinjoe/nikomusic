@@ -1,9 +1,16 @@
 package com.music.nikomusic.data.lyrics
 
 import com.music.nikomusic.data.Http
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /**
  * Shared plumbing for the lyric providers.
@@ -40,28 +47,45 @@ private val authenticatedClient by lazy {
         .build()
 }
 
+/** Runs an OkHttp GET that cancels its underlying socket when the coroutine is cancelled. */
+internal suspend fun lyricsExecute(httpClient: OkHttpClient, request: Request): String? =
+    suspendCancellableCoroutine { cont ->
+        val call = httpClient.newCall(request)
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(
+            object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resume(null)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.use { res ->
+                        val body = if (res.isSuccessful) runCatching { res.body?.string() }.getOrNull() else null
+                        if (cont.isActive) cont.resume(body)
+                    }
+                }
+            },
+        )
+    }
+
 /** Body of a successful GET, or null for any failure at all. */
-internal fun lyricsGet(url: String): String? = runCatching {
+internal suspend fun lyricsGet(url: String): String? = runCatching {
     val request = Request.Builder().url(url)
         .header("User-Agent", LYRICS_AGENT)
         .header("Accept", "application/json")
         .build()
-    client.newCall(request).execute().use { response ->
-        if (response.isSuccessful) response.body?.string() else null
-    }
+    lyricsExecute(client, request)
 }.getOrNull()
 
 /** Body of an authenticated provider GET without service-specific browser headers. */
-internal fun lyricsGetBearer(url: String, bearer: String): String? = runCatching {
+internal suspend fun lyricsGetBearer(url: String, bearer: String): String? = runCatching {
     if (bearer.isBlank()) return null
     val request = Request.Builder().url(url)
         .header("User-Agent", LYRICS_AGENT)
         .header("Accept", "application/json, text/plain, */*")
         .header("Authorization", "Bearer $bearer")
         .build()
-    authenticatedClient.newCall(request).execute().use { response ->
-        if (response.isSuccessful) response.body?.string() else null
-    }
+    lyricsExecute(authenticatedClient, request)
 }.getOrNull()
 
 /**
@@ -69,7 +93,7 @@ internal fun lyricsGetBearer(url: String, bearer: String): String? = runCatching
  * sends alongside one — `amp-api.music.apple.com` answers a token with no
  * `Origin` at all the same way it answers a wrong one, with a 403.
  */
-internal fun lyricsGetAuthorized(url: String, bearer: String): String? = runCatching {
+internal suspend fun lyricsGetAuthorized(url: String, bearer: String): String? = runCatching {
     val request = Request.Builder().url(url)
         .header("User-Agent", LYRICS_AGENT)
         .header("Accept", "application/json")
@@ -77,7 +101,5 @@ internal fun lyricsGetAuthorized(url: String, bearer: String): String? = runCatc
         .header("Origin", "https://music.apple.com")
         .header("Referer", "https://music.apple.com/")
         .build()
-    client.newCall(request).execute().use { response ->
-        if (response.isSuccessful) response.body?.string() else null
-    }
+    lyricsExecute(client, request)
 }.getOrNull()

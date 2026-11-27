@@ -32,7 +32,7 @@ object KuGou {
         val keyword = keyword(title, artist, album)
         val seconds = (durationMs / 1000).toInt()
 
-        val candidate = searchSongs(keyword, seconds)?.firstNotNullOfOrNull { hash ->
+        val candidate = searchSongs(keyword, title, artist, seconds)?.firstNotNullOfOrNull { hash ->
             searchLyrics(hash = hash)?.firstOrNull()
         } ?: searchLyrics(keyword = keyword, seconds = seconds)?.firstOrNull()
             ?: return@withContext null
@@ -47,7 +47,7 @@ object KuGou {
      * first result for a common title is as likely to be a cover or a remix
      * as the right recording — and ordered closest match first.
      */
-    private fun searchSongs(keyword: Keyword, seconds: Int): List<String>? {
+    private suspend fun searchSongs(keyword: Keyword, rawTitle: String, rawArtist: String, seconds: Int): List<String>? {
         val url = "https://mobileservice.kugou.com/api/v3/search/song".toHttpUrl().newBuilder()
             .addQueryParameter("version", "9108")
             .addQueryParameter("plat", "0")
@@ -60,13 +60,13 @@ object KuGou {
         return response?.data?.info.orEmpty()
             .filter { info ->
                 (seconds <= 0 || abs(info.duration - seconds) <= DURATION_TOLERANCE_SECONDS) &&
-                    isKuGouInfoMatch(keyword.query, info)
+                    isKuGouInfoMatch(rawTitle, rawArtist, info)
             }
             .sortedBy { abs(it.duration - seconds) }
             .map { it.hash }
     }
 
-    private fun searchLyrics(hash: String? = null, keyword: Keyword? = null, seconds: Int = -1): List<Candidate>? {
+    private suspend fun searchLyrics(hash: String? = null, keyword: Keyword? = null, seconds: Int = -1): List<Candidate>? {
         val builder = "https://lyrics.kugou.com/search".toHttpUrl().newBuilder()
             .addQueryParameter("ver", "1")
             .addQueryParameter("man", "yes")
@@ -84,7 +84,7 @@ object KuGou {
         return response?.candidates
     }
 
-    private fun download(id: String, accessKey: String): String? {
+    private suspend fun download(id: String, accessKey: String): String? {
         val url = "https://lyrics.kugou.com/download".toHttpUrl().newBuilder()
             .addQueryParameter("fmt", "lrc")
             .addQueryParameter("charset", "utf8")
@@ -157,20 +157,22 @@ object KuGou {
         return sung.isNotEmpty() && sung.all { INSTRUMENTAL.containsMatchIn(it) }
     }
 
-    private val STAMP = Regex("""\[\d{2}:\d{2}\.\d{2,3}]""")
-    private val INSTRUMENTAL = Regex("""纯音乐.*欣赏""")
-    private val STAMPED = Regex("""\[\d{2}:\d{2}\.\d{2,3}].*""")
+    private val STAMP = Regex("""\[(?:\d{1,2}:)?\d{1,3}:\d{2}(?:[.:]\d{1,3})?]""")
+    private val INSTRUMENTAL = Regex("""(?:纯音乐.*欣赏|instrumental\s*(?:only|version|track)?\s*[—–-]?\s*(?:please\s+enjoy|no\s+lyrics)?)""", RegexOption.IGNORE_CASE)
+    private val STAMPED = Regex("""\[(?:\d{1,2}:)?\d{1,3}:\d{2}(?:[.:]\d{1,3})?].*""")
     private val CREDIT = Regex(""".+][^\[]+[:：].+""")
 
-    private fun isKuGouInfoMatch(query: String, info: SearchSongResponse.Info): Boolean {
-        val combinedName = listOf(info.songname, info.singername, info.filename).filter { it.isNotBlank() }.joinToString(" ")
-        if (combinedName.isBlank()) return true
-        if (!isLyricsVersionCompatible(query, info.songname.ifBlank { info.filename })) return false
-        val songTokens = normalizeLyricsMatchText(info.songname.ifBlank { info.filename })
-            .split(' ').filter { it.length >= 2 }
-        if (songTokens.isEmpty()) return true
-        val normQuery = normalizeLyricsMatchText(query)
-        return songTokens.any { it in normQuery }
+    private fun isKuGouInfoMatch(targetTitle: String, targetArtist: String, info: SearchSongResponse.Info): Boolean {
+        val candTitle = info.songname.ifBlank { info.filename }
+        if (candTitle.isBlank() && info.singername.isBlank()) return true
+        if (candTitle.isNotBlank()) {
+            if (!isLyricsVersionCompatible(targetTitle, candTitle)) return false
+            if (!lyricsTitleMatches(candTitle, targetTitle)) return false
+        }
+        if (targetArtist.isNotBlank() && info.singername.isNotBlank() && !lyricsArtistMatches(info.singername, targetArtist)) {
+            return false
+        }
+        return true
     }
 
     private class Keyword(val query: String)

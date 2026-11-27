@@ -499,8 +499,14 @@ private fun scrollLead(lines: List<LyricLine>, positionMs: Long): Long {
     if (current < 0) return SCROLL_LEAD_MIN_MS
     val next = lines.getOrNull(current + 1) ?: return SCROLL_LEAD_MIN_MS
     val gap = next.timeMs - lines[current].endMs
-    return gap.coerceIn(SCROLL_LEAD_MIN_MS, SCROLL_LEAD_MAX_MS)
+    val slot = (next.timeMs - lines[current].timeMs).coerceAtLeast(160L)
+    val upper = minOf(SCROLL_LEAD_MAX_MS, slot)
+    val lower = minOf(SCROLL_LEAD_MIN_MS, upper)
+    return gap.coerceIn(lower, upper)
 }
+
+internal fun hasLyricTiming(lines: List<LyricLine>): Boolean =
+    lines.any { it.isWordSynced || it.timeMs > 0L || (it.sungUntilMs?.let { until -> until > it.timeMs } == true) }
 
 /**
  * How far a finger has to carry the lyric list before the player below it
@@ -606,11 +612,13 @@ internal fun CurrentLyricStrip(
     // Compute the active lyric text so we can determine RTL direction at the
     // strip level.  This lets us override the parent Column's forced
     // CenterHorizontally alignment and flush RTL lines to the right edge.
-    val isSynced = remember(lines) { lines.any { it.timeMs > 0L } }
+    val isSynced = remember(lines) { hasLyricTiming(lines) }
     var stripRtl by remember { mutableStateOf(false) }
     var activeText by remember { mutableStateOf("") }
+    var stripClock: MutableLongState? = null
     if (isSynced) {
         val clock = rememberLyricClock(trackKey, playhead, isPlaying)
+        stripClock = clock
         val index by remember(lines) {
             derivedStateOf { lines.indexOfLast { it.timeMs <= clock.longValue } }
         }
@@ -648,6 +656,7 @@ internal fun CurrentLyricStrip(
                     isPlaying = isPlaying,
                     durationMs = durationMs,
                     onClick = onClick,
+                    sharedClock = stripClock,
                     modifier = Modifier
                         .align(align),
                 )
@@ -1830,7 +1839,7 @@ internal fun LyricsPanel(
     val clock = rememberLyricClock(trackKey, playhead, isPlaying, active)
     val subReveal = rememberSubLyricsReveal(subLines, trackKey)
 
-    val isSynced = remember(lines) { lines.any { it.timeMs > 0L } }
+    val isSynced = remember(lines) { hasLyricTiming(lines) }
     // Only a song that actually names a second voice is laid out as one. A
     // single-voice song has every line on the left already, so splitting the
     // panel into lanes for it would just be a narrower panel.
@@ -1951,8 +1960,8 @@ internal fun LyricsPanel(
     // behind it should be running. Held as a plain value plus a frame clock
     // rather than an animation per row: sixty rows each with their own
     // Animatable is sixty animations to start and stop on every handover.
-    var run by remember(lines) { mutableStateOf(ScrollRun(0, 0f, LYRIC_SETTLE_MS)) }
-    val since = remember(lines) { mutableFloatStateOf(0f) }
+    var run by remember(lines, isSynced) { mutableStateOf(ScrollRun(0, 0f, LYRIC_SETTLE_MS)) }
+    val since = remember(lines, isSynced) { mutableFloatStateOf(0f) }
     LaunchedEffect(run.id) {
         if (run.id == 0) return@LaunchedEffect
         animate(
@@ -1961,10 +1970,10 @@ internal fun LyricsPanel(
             animationSpec = tween(run.spanMs.toInt(), easing = LinearEasing),
         ) { value, _ -> since.floatValue = value }
     }
-    // Keyed to the track, not to [lines]: toggling the translation replaces
-    // every line while the reader's place in the song is unchanged, and a reset
-    // here would snap the panel back to the top mid-read.
-    var placed by remember(trackKey) { mutableStateOf(false) }
+    // Keyed to the track and sync mode so switching from plain/empty fallback
+    // to timed lyrics mid-track cleanly positions on the current active line,
+    // while toggling translations preserves scroll anchor.
+    var placed by remember(trackKey, isSynced) { mutableStateOf(false) }
     // Unsynced text has no line to hold anywhere, and centred it would only
     // open with half a screen of nothing above the first verse.
     val centered = centerFocus && isSynced
@@ -2032,6 +2041,7 @@ internal fun LyricsPanel(
                 // scrolled past. How far is not known without laying the rows
                 // out, so this hands back to the list's own staged scroll.
                 else -> {
+                    run = ScrollRun(run.id + 1, 0f, 0)
                     listState.animateScrollToItem(focusLine, scrollOffset = -focusOffset(0))
                     // That lands the row's top on the middle; the last half
                     // line is settled once its height is known.
@@ -2097,7 +2107,26 @@ internal fun LyricsPanel(
         ),
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        itemsIndexed(lines) { index, line ->
+        itemsIndexed(
+            items = lines,
+            key = { index, line -> "${index}_${line.timeMs}_${line.text.hashCode()}" },
+        ) { index, line ->
+            if (!isSynced && index == 0) {
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = GLOW_ROOM)
+                        .padding(bottom = 10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "Unsynced lyrics",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.65f),
+                    )
+                }
+            }
             if (!isSynced && isGeniusSectionHeader(line.text)) {
                 val sectionTitle = line.text.removePrefix("[").removeSuffix("]").trim()
                 Column(
@@ -2826,8 +2855,9 @@ private fun CurrentLyricLine(
     durationMs: Long,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    sharedClock: MutableLongState? = null,
 ) {
-    val isSynced = remember(lines) { lines.any { it.timeMs > 0L } }
+    val isSynced = remember(lines) { hasLyricTiming(lines) }
     // One line box whatever the script: left to the font, a Devanagari or
     // Gurmukhi line is taller than a Latin one and the credits and artwork
     // above this strip shift up and down as lines change language.
@@ -2872,7 +2902,7 @@ private fun CurrentLyricLine(
         return
     }
 
-    val clock = rememberLyricClock(trackKey, playhead, isPlaying)
+    val clock = sharedClock ?: rememberLyricClock(trackKey, playhead, isPlaying)
 
     val index by remember(lines) {
         derivedStateOf { lines.indexOfLast { it.timeMs <= clock.longValue } }
@@ -2988,7 +3018,7 @@ private fun CurrentLyricLine(
                 SweptLyricLine(
                     line = swept,
                     clock = clock,
-                    style = voiceStyle(stripStyle, text, alignEnd = false, laneLocked = false),
+                    style = voiceStyle(stripStyle, lineText, alignEnd = false, laneLocked = false),
                     dimAlpha = UNSUNG_ALPHA_STRIP,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
