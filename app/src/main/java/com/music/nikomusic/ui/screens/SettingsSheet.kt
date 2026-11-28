@@ -165,6 +165,7 @@ import com.music.nikomusic.playback.AudioOutputStatus
 import com.music.nikomusic.playback.audio.bitperfect.BitPerfectOutput
 import com.music.nikomusic.data.settings.AutomixPerformanceMode
 import com.music.nikomusic.playback.smart.AutomixModels
+import com.music.nikomusic.BuildConfig
 import com.music.nikomusic.R
 import com.music.nikomusic.data.sources.DeviceCodecs
 import com.music.nikomusic.data.settings.AudioQuality

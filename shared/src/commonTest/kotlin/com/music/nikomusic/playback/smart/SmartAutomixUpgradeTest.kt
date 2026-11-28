@@ -56,8 +56,8 @@ class SmartAutomixUpgradeTest {
         val interludePlan = planTransition(
             analysis = interlude,
             nextAnalysis = next,
-            currentTrack = TransitionTrackInfo(id = "short", duration = 26.0, title = "Interlude", artist = "A"),
-            nextTrack = TransitionTrackInfo(id = "next", duration = 180.0, title = "Main", artist = "B"),
+            currentTrack = TransitionTrackInfo(id = "short", durationMs = 26_000L, title = "Interlude", artist = "A"),
+            nextTrack = TransitionTrackInfo(id = "next", durationMs = 180_000L, title = "Main", artist = "B"),
             duration = 26.0,
             mode = CrossfadeMode.SMART,
         )
@@ -70,7 +70,7 @@ class SmartAutomixUpgradeTest {
         val skitPlan = planTransition(
             analysis = skit,
             nextAnalysis = next,
-            currentTrack = TransitionTrackInfo(id = "skit", duration = 10.0, title = "Tag", artist = "A"),
+            currentTrack = TransitionTrackInfo(id = "skit", durationMs = 10_000L, title = "Tag", artist = "A"),
             duration = 10.0,
             mode = CrossfadeMode.SMART,
         )
@@ -88,8 +88,8 @@ class SmartAutomixUpgradeTest {
         val plan = planTransition(
             analysis = out,
             nextAnalysis = longIntroNext,
-            currentTrack = TransitionTrackInfo(id = "out", duration = 200.0),
-            nextTrack = TransitionTrackInfo(id = "in", duration = 240.0),
+            currentTrack = TransitionTrackInfo(id = "out", durationMs = 200_000L),
+            nextTrack = TransitionTrackInfo(id = "in", durationMs = 240_000L),
             duration = 200.0,
             mode = CrossfadeMode.SMART,
             mixWindow = true,

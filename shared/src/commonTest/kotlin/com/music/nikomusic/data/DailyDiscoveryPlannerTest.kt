@@ -48,7 +48,7 @@ class DailyDiscoveryPlannerTest {
             favoriteMoods = mapOf(
                 TopPickMood.FOCUS to 0.9,
                 TopPickMood.CHILL to 0.6,
-                TopPickMood.WORKOUT to 0.3,
+                TopPickMood.FITNESS to 0.3,
                 TopPickMood.LATE_NIGHT to 0.2,
                 TopPickMood.SAD to 0.1,
             ),

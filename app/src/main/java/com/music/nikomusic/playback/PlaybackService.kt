@@ -136,6 +136,7 @@ import com.music.nikomusic.data.innertube.PlayerClient
 import com.music.nikomusic.data.innertube.StreamResolver
 import com.music.nikomusic.data.model.LikeStatus
 import com.music.nikomusic.data.model.Song
+import com.music.nikomusic.data.model.durationMillis
 import com.music.nikomusic.data.model.isUnresolvedSpotify
 import com.music.nikomusic.data.remote.RemoteArtworkStore
 import com.music.nikomusic.data.scrobbling.LastFM

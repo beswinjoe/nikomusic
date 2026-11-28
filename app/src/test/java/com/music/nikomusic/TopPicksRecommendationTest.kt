@@ -24,8 +24,8 @@ class TopPicksRecommendationTest {
         val evening = LocalDateTime.of(2026, 11, 26, 23, 0)
         val picks = (1..25).map { TopPicks.moodFor(evening, local) }
         assertTrue(
-            picks.count { it == TopPickMood.LATE_NIGHT } >= 10,
             "Heavy Late Night preference should boost Late Night at night, got $picks",
+            picks.count { it == TopPickMood.LATE_NIGHT } >= 10,
         )
     }
 

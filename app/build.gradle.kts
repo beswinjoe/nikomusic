@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.io.FileInputStream
+import java.net.URI
 
 plugins {
     id("com.android.application")
@@ -76,7 +77,7 @@ val jamInviteOrigin: String = propOrEnv(
 ).trimEnd('/')
 val jamInviteHost: String = propOrEnv(
     "JAM_INVITE_HOST",
-    runCatching { java.net.URI(jamInviteOrigin).host }.getOrNull().orEmpty(),
+    runCatching { URI(jamInviteOrigin).host }.getOrNull().orEmpty(),
 )
 
 // Version properties are defined in the root build.gradle.kts.

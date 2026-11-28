@@ -5,6 +5,7 @@ import androidx.compose.ui.res.stringResource
 import com.music.nikomusic.R
 import com.music.nikomusic.data.model.Song
 import com.music.nikomusic.data.settings.AppSettings
+import com.music.nikomusic.data.settings.AudioQuality
 import com.music.nikomusic.data.sources.SourceRegistry
 import com.music.nikomusic.ui.components.InfoAlert
 import dev.chrisbanes.haze.HazeState

@@ -862,7 +862,7 @@ internal fun createBottomFade(fraction: Float, bounds: IntSize, endPx: Float?): 
  * What the update block last applied to the clip's view, so it re-applies a
  * transform or a fade only when one of its inputs has actually changed.
  */
-private class AppliedLook {
+internal class AppliedLook {
     private var aspect = Float.NaN
     private var mode: CanvasContentMode? = null
     private var alignTop = false

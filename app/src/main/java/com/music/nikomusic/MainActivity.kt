@@ -784,7 +784,7 @@ private fun NikoMusicApp(
         songActions = song
     }
     val openDailyDiscoveryMenu: (DailyDiscoveryTrack) -> Unit = { item ->
-        openSongMenu(item.song)
+        openSongMenu(item.toPlayableSong())
         menuFromDailyDiscovery = true
         menuDailyDiscoveryGenres = item.genres
     }
@@ -1944,12 +1944,14 @@ private fun NikoMusicApp(
         val allItems = collection?.items.orEmpty()
         if (allItems.isNotEmpty()) {
             val tapped = allItems.getOrNull(tappedIndex)
-            if (tapped != null && !shuffle && (tapped.unavailable || tapped.song.videoId.isBlank() || tapped.song.isUnresolvedSpotify)) {
+            if (tapped != null && !shuffle && (tapped.unavailable || tapped.song.videoId.isBlank() || tapped.toPlayableSong().isUnresolvedSpotify)) {
                 showQueueNotice(dailyDiscoveryUnavailableMsg)
             } else {
                 val playableSongs = allItems
-                    .filter { !it.unavailable && it.song.videoId.isNotBlank() && !it.song.isUnresolvedSpotify }
-                    .map { it.song }
+                    .mapNotNull { item ->
+                        if (item.unavailable || item.song.videoId.isBlank()) null
+                        else item.toPlayableSong().takeUnless { it.isUnresolvedSpotify }
+                    }
                 if (playableSongs.isEmpty()) {
                     showQueueNotice(dailyDiscoveryUnavailableMsg)
                 } else if (shuffle) {
@@ -3220,15 +3222,16 @@ private fun NikoMusicApp(
                                 onShufflePlay = { playDailyDiscovery(dailyDiscovery.collection, 0, true) },
                                 onTrackClick = { _, index -> playDailyDiscovery(dailyDiscovery.collection, index, false) },
                                 onTrackSwipe = { item ->
-                                    if (item.unavailable || item.song.videoId.isBlank() || item.song.isUnresolvedSpotify) {
+                                    val song = item.toPlayableSong()
+                                    if (item.unavailable || song.videoId.isBlank() || song.isUnresolvedSpotify) {
                                         showQueueNotice(dailyDiscoveryUnavailableMsg)
                                     } else {
-                                        onSongSwipe(item.song)
+                                        onSongSwipe(song)
                                     }
                                 },
                                 onTrackMore = openDailyDiscoveryMenu,
                                 onFeedback = { item, action ->
-                                    viewModel.submitDailyDiscoveryFeedback(item.song, action, item.genres)
+                                    viewModel.submitDailyDiscoveryFeedback(item.toPlayableSong(), action, item.genres)
                                 },
                             )
                         } else if (pageRoute == AppRoute.Moods) {
@@ -3710,7 +3713,7 @@ private fun NikoMusicApp(
                                             },
                                             onTrackMore = openDailyDiscoveryMenu,
                                             onFeedback = { item, action ->
-                                                viewModel.submitDailyDiscoveryFeedback(item.song, action, item.genres)
+                                                viewModel.submitDailyDiscoveryFeedback(item.toPlayableSong(), action, item.genres)
                                             },
                                         )
                                     }

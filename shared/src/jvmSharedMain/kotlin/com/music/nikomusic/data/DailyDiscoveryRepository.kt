@@ -167,8 +167,13 @@ class DailyDiscoveryRepository(
 
         // Repeated opens same day -> serve cached without hitting backend/YT again.
         if (!forceRefresh && freshToday) {
+            val resultCollection = if (isNetworkAvailable) {
+                sanitizedCached
+            } else {
+                sanitizedCached?.copy(isStale = true, source = DiscoverySource.CACHED_OFFLINE)
+            }
             return LoadResult(
-                collection = sanitizedCached,
+                collection = resultCollection,
                 state = initial.copy(cached = sanitizedCached),
                 status = if (isNetworkAvailable) LoadStatus.Ready else LoadStatus.CachedOffline,
                 refreshAllowance = allowance,
